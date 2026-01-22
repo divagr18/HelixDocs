@@ -1,0 +1,14 @@
+{
+  "files": [
+    {
+      "path": "test.py",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        "datetime"
+      ],
+      "structure_hash": "2763d133c5e59ca4ad13b9314864224f3fe33b759a4c3e72fcc03b85ce71384d"
+    }
+  ],
+  "root_merkle_hash": "1ac111370492425306a216b9f5105b80615288f8fd3c058ec69cf40a2be3ff05"
+}

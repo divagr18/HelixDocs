@@ -1,0 +1,26 @@
+From 13f8bb80a03807374a1a2676496e5cfaa57f516e Mon Sep 17 00:00:00 2001
+From: div18 <114850579+divagr18@users.noreply.github.com>
+Date: Sat, 31 Jan 2026 01:40:08 +0530
+Subject: [PATCH] feat: Add E2B API key placeholder to the example environment
+ configuration.
+
+---
+ .env.example | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/.env.example b/.env.example
+index fecbf89..a6da994 100644
+--- a/.env.example
++++ b/.env.example
+@@ -5,6 +5,8 @@ DATABASE_URL=postgres://helix:helix@db:5432/helix_dev
+ CELERY_BROKER_URL=redis://cache:6379/0
+ CELERY_RESULT_BACKEND=redis://cache:6379/0
+ 
++E2B_API_KEY=your_e2b_api_key_here
++
+ # GitHub OAuth Configuration
+ # Get these from: https://github.com/settings/applications/new
+ GITHUB_CLIENT_ID=your_github_client_id_here
+-- 
+2.40.0.windows.1
+

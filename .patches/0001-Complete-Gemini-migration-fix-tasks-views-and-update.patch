@@ -1,0 +1,1966 @@
+From 77da954436f54d95c0022571704d4f129668a3e2 Mon Sep 17 00:00:00 2001
+From: div18 <114850579+divagr18@users.noreply.github.com>
+Date: Sat, 31 Jan 2026 01:39:31 +0530
+Subject: [PATCH] Complete Gemini migration: fix tasks, views, and update
+ frontend links
+
+---
+ .env.example                                  |  10 +-
+ README.md                                     |   3 +-
+ RELEASE_CHECKLIST.md                          | 112 ----
+ backend/config/celery.py                      |  14 +-
+ backend/config/settings.py                    |   6 +
+ backend/repositories/admin.py                 |   4 +-
+ backend/repositories/agno_tools.py            |  20 +-
+ backend/repositories/ai_services.py           |  92 ++-
+ backend/repositories/models.py                |  65 +-
+ backend/repositories/tasks.py                 | 633 +++++-------------
+ backend/repositories/views.py                 | 354 +++++-----
+ .../intelligence/FunctionDetailList.tsx       |   3 +-
+ 12 files changed, 465 insertions(+), 851 deletions(-)
+ delete mode 100644 RELEASE_CHECKLIST.md
+
+diff --git a/.env.example b/.env.example
+index 73a82f0..fecbf89 100644
+--- a/.env.example
++++ b/.env.example
+@@ -10,13 +10,9 @@ CELERY_RESULT_BACKEND=redis://cache:6379/0
+ GITHUB_CLIENT_ID=your_github_client_id_here
+ GITHUB_CLIENT_SECRET=your_github_client_secret_here
+ 
+-# OpenAI API Configuration
+-# Get from: https://platform.openai.com/api-keys
+-OPENAI_API_KEY=sk-proj-your_openai_api_key_here
+-
+-# E2B API Configuration
+-# Get from: https://e2b.dev/docs
+-E2B_API_KEY=e2b_your_e2b_api_key_here
++# Google Gemini API Configuration
++# Get from: https://aistudio.google.com/app/apikey
++GOOGLE_API_KEY=your_google_api_key_here
+ 
+ # Readonly Database User (for AI access)
+ READONLY_POSTGRES_USER=helix_readonly
+diff --git a/README.md b/README.md
+index b909194..e66e979 100644
+--- a/README.md
++++ b/README.md
+@@ -181,7 +181,8 @@ POSTGRES_PORT=5432
+ GITHUB_CLIENT_ID=your-github-client-id
+ GITHUB_CLIENT_SECRET=your-github-client-secret
+ 
+-OPENAI_API_KEY=your-openai-api-key
++# Google Gemini API (Required for AI features)
++GOOGLE_API_KEY=your-google-api-key
+ ```
+ 
+ ### 3. Set Up GitHub OAuth
+diff --git a/RELEASE_CHECKLIST.md b/RELEASE_CHECKLIST.md
+deleted file mode 100644
+index ce4c3d3..0000000
+--- a/RELEASE_CHECKLIST.md
++++ /dev/null
+@@ -1,112 +0,0 @@
+-# Open Source Release Checklist
+-
+-## ✅ Documentation
+-- [x] README.md with clear setup instructions
+-- [x] LICENSE file (MIT)
+-- [x] CONTRIBUTING.md with contribution guidelines
+-- [x] CODE_OF_CONDUCT.md
+-- [x] DEPLOYMENT.md for production setup
+-- [x] .env.example with all required variables
+-- [x] Python-only limitation clearly documented
+-
+-## ✅ Security
+-- [x] .env in .gitignore (secrets not committed)
+-- [x] .env.example has placeholder values only
+-- [x] No hardcoded API keys or secrets in code
+-- [x] Django SECRET_KEY in environment variables
+-- [x] GitHub OAuth setup documented
+-- [x] ALLOWED_HOSTS configurable via environment
+-
+-## ✅ Code Quality
+-- [x] Removed test/coverage upload files
+-- [x] Cleaned up temporary files
+-- [x] No TODO/FIXME blocking release (only minor ones remain)
+-- [x] Docker setup working
+-- [x] Frontend builds successfully
+-- [x] Backend migrations clean
+-
+-## ✅ Features Working
+-- [x] GitHub OAuth login
+-- [x] Local account creation
+-- [x] GitHub account linking/unlinking
+-- [x] Repository import from GitHub
+-- [x] Local repository upload (Python files)
+-- [x] Code analysis and metrics
+-- [x] AI chat with Ctrl+K (with embeddings)
+-- [x] Architecture diagrams
+-- [x] Settings pages functional
+-
+-## ✅ GitHub Setup
+-- [x] Issue templates created
+-- [x] Pull request template created
+-- [x] .gitignore comprehensive
+-
+-## ⚠️ Minor Items (Non-Blocking)
+-- [ ] Chat history storage (marked as TODO, future feature)
+-- [ ] Email notifications for invitations (marked as TODO, future feature)
+-- [ ] Mark all notifications as read (marked as TODO, future feature)
+-- [ ] AI request monthly limits reset logic (marked as TODO, future feature)
+-
+-## 🚀 Pre-Release Actions Needed
+-
+-### 1. Environment Variables
+-Ensure users create `.env` from `.env.example` and fill in:
+-- `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`
+-- `OPENAI_API_KEY` (optional, for AI features)
+-- `E2B_API_KEY` (optional, for sandbox testing)
+-- `SECRET_KEY` (generate new random string)
+-
+-### 2. GitHub OAuth App
+-Users must create their own GitHub OAuth app at:
+-https://github.com/settings/developers
+-
+-### 3. First Run
+-```bash
+-docker-compose up -d
+-# Wait for services to start
+-# Frontend: http://localhost:5173
+-# Backend: http://localhost:8000
+-```
+-
+-### 4. Repository Settings
+-- [ ] Add repository description
+-- [ ] Add topics/tags: `code-analysis`, `python`, `ai`, `django`, `react`, `self-hosted`
+-- [ ] Enable Issues
+-- [ ] Enable Discussions (optional)
+-- [ ] Add repository image/social preview
+-
+-## 📝 Release Notes Draft
+-
+-### Helix v1.0.0 - Initial Release
+-
+-**What is Helix?**
+-A self-hosted code intelligence platform for analyzing and understanding Python codebases. Built with Django and React, Helix runs entirely on your local machine to ensure complete privacy and control over your code.
+-
+-**Key Features:**
+-- 🔍 Python code analysis with metrics and architecture diagrams
+-- 🤖 AI-powered chat (Ctrl+K) using vector search on your codebase
+-- 🔐 GitHub OAuth integration with account linking
+-- 📦 Local repository upload support
+-- 🎨 Clean, modern UI with dark theme
+-- 🐳 Easy Docker-based deployment
+-
+-**Current Limitations:**
+-- Python projects only (multi-language support planned)
+-- Requires GitHub OAuth setup
+-- Requires OpenAI API key for AI features
+-
+-**Installation:**
+-See [README.md](README.md) for detailed setup instructions.
+-
+----
+-
+-## ✅ READY FOR OPEN SOURCE RELEASE
+-
+-All critical items are complete. The minor TODOs are for future enhancements and don't block the initial release.
+-
+-**Recommended next steps:**
+-1. Double-check no `.env` file is committed
+-2. Test fresh installation on a clean machine
+-3. Create v1.0.0 release tag
+-4. Publish to GitHub
+-5. Share on relevant communities (Reddit, Hacker News, etc.)
+diff --git a/backend/config/celery.py b/backend/config/celery.py
+index e1642de..332f1f9 100644
+--- a/backend/config/celery.py
++++ b/backend/config/celery.py
+@@ -14,12 +14,14 @@ app = Celery('config')
+ #   should have a `CELERY_` prefix.
+ app.config_from_object('django.conf:settings', namespace='CELERY')
+ app.conf.beat_schedule = {
+-    'poll-openai-batch-jobs-every-5-minutes': {
+-        'task': 'repositories.tasks.poll_and_process_completed_batches_task',
+-        'schedule': crontab(minute='*/5'),  # Run every 5 minutes
+-        'args': (), # No arguments needed for this task
+-    },
+-    # You can add other scheduled tasks here in the future
++    # NOTE: The OpenAI batch polling task has been removed
++    # We now use direct Gemini embedding generation which doesn't require polling
++    # 'poll-openai-batch-jobs-every-5-minutes': {
++    #     'task': 'repositories.tasks.poll_and_process_completed_batches_task',
++    #     'schedule': crontab(minute='*/5'),
++    #     'args': (),
++    # },
++    # Add other scheduled tasks here as needed
+ }
+ 
+ app.conf.timezone = 'UTC'
+diff --git a/backend/config/settings.py b/backend/config/settings.py
+index 35ee89b..1f86bfb 100644
+--- a/backend/config/settings.py
++++ b/backend/config/settings.py
+@@ -223,6 +223,12 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
+ # Additional allauth settings for proper OAuth flow
+ ACCOUNT_AUTHENTICATION_METHOD = 'email'
+ ACCOUNT_EMAIL_REQUIRED = True
++# Validated Google GenAI Settings
++GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
++LLM_MODEL_ID = "gemini-3-flash-preview"
++GEMINI_MODEL_ID = LLM_MODEL_ID  # Alias for consistency
++EMBEDDING_MODEL_ID = "gemini-embedding-001"
++
+ ACCOUNT_USERNAME_REQUIRED = False
+ SOCIALACCOUNT_QUERY_EMAIL = True
+ SOCIALACCOUNT_EMAIL_REQUIRED = True
+diff --git a/backend/repositories/admin.py b/backend/repositories/admin.py
+index d8c9563..65c80b1 100644
+--- a/backend/repositories/admin.py
++++ b/backend/repositories/admin.py
+@@ -45,7 +45,7 @@ class OrganizationMemberAdmin(admin.ModelAdmin):
+     search_fields = ('user__username', 'organization__name')
+     raw_id_fields = ('user', 'organization')
+ 
+-from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,EmbeddingBatchJob,Insight
++from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,AiBatchJob,Insight
+ 
+ admin.site.register(CodeFile)
+ admin.site.register(CodeClass) # Register the new Class model
+@@ -79,7 +79,7 @@ class NotificationAdmin(admin.ModelAdmin):
+         queryset.update(is_read=False)
+     mark_as_unread.short_description = "Mark selected notifications as unread"
+ 
+-@admin.register(EmbeddingBatchJob)
++@admin.register(AiBatchJob)
+ class EmbeddingBatchJobAdmin(admin.ModelAdmin):
+     list_display = (
+         'id', 
+diff --git a/backend/repositories/agno_tools.py b/backend/repositories/agno_tools.py
+index f20b19d..b7e868e 100644
+--- a/backend/repositories/agno_tools.py
++++ b/backend/repositories/agno_tools.py
+@@ -1,10 +1,10 @@
+ # backend/repositories/agno_tools.py
+ from agno.tools import tool
+-from openai import OpenAI
+-import psycopg2 # Import the OpenAI library
+-# We need access to our models and the OpenAI client
++from google import genai
++import psycopg2
++from django.conf import settings
++# We need access to our models and the Gemini client
+ from .models import KnowledgeChunk, CodeSymbol, OrganizationMember, Repository
+-OPENAI_CLIENT = OpenAI()
+ from pgvector.django import L2Distance
+ 
+ from typing import Optional
+@@ -38,11 +38,13 @@ def helix_knowledge_search(query: str, repo_id: int, user_id: int) -> str:
+     # --- END FIX ---
+ 
+     try:
+-        # 2. Generate an embedding for the user's query
+-        query_embedding = OPENAI_CLIENT.embeddings.create(
+-            input=[query], 
+-            model="text-embedding-3-small"
+-        ).data[0].embedding
++        # 2. Generate an embedding for the user's query using Gemini
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        embedding_response = genai_client.models.embed_content(
++            model=settings.EMBEDDING_MODEL_ID,
++            content=query
++        )
++        query_embedding = embedding_response.embeddings[0].values
+         
+         # Now that we've confirmed access, the rest of the queries can proceed.
+         # The RLS policies will provide an additional layer of security, but this
+diff --git a/backend/repositories/ai_services.py b/backend/repositories/ai_services.py
+index d78a34e..5bf2139 100644
+--- a/backend/repositories/ai_services.py
++++ b/backend/repositories/ai_services.py
+@@ -4,7 +4,8 @@ import json
+ import re
+ from typing import Generator,Optional
+ from django.conf import settings
+-from openai import OpenAI as OpenAIClient
++from google import genai 
++from google.genai import types
+ from agno.tools import tool
+ import logging
+ from django.db.models import Q
+@@ -14,7 +15,7 @@ from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeCla
+ from pgvector.django import L2Distance
+ def generate_class_summary_stream(
+     code_class: CodeClass,
+-    openai_client: OpenAIClient
++    genai_client: genai.Client
+ ) -> Generator[str, None, None]:
+     """
+     Assembles a high-signal prompt and streams a summary for a CodeClass.
+@@ -115,22 +116,21 @@ def generate_class_summary_stream(
+ 
+     # 5. Call LLM and Stream Response
+     try:
+-        stream = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini",
+-            messages=[
+-                {"role": "system", "content": "You are a helpful AI software architect that writes clear, concise technical documentation in Markdown."},
+-                {"role": "user", "content": prompt}
+-            ],
+-            stream=True,
+-            temperature=0.4,
+-            max_tokens=1000
+-        )
+         full_response_text = ""
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
++        response = genai_client.models.generate_content_stream(
++            model=settings.LLM_MODEL_ID,
++            contents=prompt,
++            config=types.GenerateContentConfig(
++                temperature=0.4,
++                max_output_tokens=5000,
++                system_instruction="You are a helpful AI software architect that writes clear, concise technical documentation in Markdown."
++            )
++        )
++        for chunk in response:
++            content = chunk.text
+             if content:
+                 full_response_text += content
+-                yield content  # If you're streaming to client
++                yield content
+ 
+         # After streaming is done, print the full content
+         if full_response_text:
+@@ -181,7 +181,7 @@ def generate_class_summary_stream(
+ 
+ def generate_refactor_stream(
+     symbol_obj: CodeSymbol,
+-    openai_client: OpenAIClient
++    genai_client: genai.Client
+ ) -> Generator[str, None, None]:
+     """
+     Assembles a high-signal prompt and streams refactoring suggestions for a CodeSymbol.
+@@ -232,18 +232,17 @@ def generate_refactor_stream(
+ 
+     # --- LLM Call ---
+     try:
+-        stream = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini", # "gpt-4-turbo-preview" is recommended
+-            messages=[
+-                {"role": "system", "content": "You are a helpful AI code quality analyst that provides specific refactoring suggestions in Markdown format."},
+-                {"role": "user", "content": prompt}
+-            ],
+-            stream=True,
+-            temperature=0.3, # Low temperature for factual, standard refactoring patterns
+-            max_tokens=2048   # Allow for detailed suggestions with code
++        response = genai_client.models.generate_content_stream(
++            model=settings.LLM_MODEL_ID,
++            contents=prompt,
++            config=types.GenerateContentConfig(
++                temperature=0.3,
++                max_output_tokens=2048,
++                system_instruction="You are a helpful AI code quality analyst that provides specific refactoring suggestions in Markdown format."
++            )
+         )
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
++        for chunk in response:
++            content = chunk.text
+             if content:
+                 yield content
+     except Exception as e:
+@@ -258,7 +257,7 @@ from django.conf import settings
+ from agno.tools.postgres import PostgresTools
+ 
+ from agno.agent import Agent, AgentKnowledge
+-from agno.models.openai import OpenAIChat
++from agno.models.google import Gemini
+ from agno.vectordb.pgvector import PgVector, SearchType
+ 
+ def get_helix_knowledge_base() -> AgentKnowledge:
+@@ -313,7 +312,7 @@ def get_helix_qa_agent(user_id: int, repo_id: int, file_path: Optional[str] = No
+         repo_name = f"ID: {repo_id}"
+     agent = Agent(
+         name="Helix",
+-        model=OpenAIChat(id="gpt-4.1-mini"),
++        model=Gemini(id="gemini-3-flash"),
+         
+         # 1. Provide the knowledge base for RAG
+         
+@@ -371,7 +370,7 @@ def handle_chat_query_stream(user_id: int,repo_id: int, query: str, file_path: s
+ def generate_module_readme_stream(
+     repo_id: int,
+     module_path: str,
+-    openai_client: OpenAIClient
++    genai_client: genai.Client
+ ) -> Generator[str, None, None]:
+     """
+     Generates an in-depth, architectural README.md for a module by synthesizing
+@@ -497,14 +496,13 @@ def generate_module_readme_stream(
+     # --- Step 5: Stream to LLM and Save ---
+     full_response_text = ""
+     try:
+-        stream = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini", # Use a powerful model for this complex task
+-            messages=[{"role": "user", "content": final_prompt}],
+-            stream=True,
+-            temperature=0.3,
++        response = genai_client.models.generate_content_stream(
++            model=settings.LLM_MODEL_ID,
++            contents=final_prompt,
++            config=types.GenerateContentConfig(temperature=0.3)
+         )
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
++        for chunk in response:
++            content = chunk.text
+             if content:
+                 full_response_text += content
+                 yield content
+@@ -522,7 +520,7 @@ def generate_module_readme_stream(
+         print(f"MODULE_README_SERVICE: FATAL - LLM streaming failed: {e}")
+         yield f"// Helix encountered an error while generating the README."
+ 
+-def generate_refactoring_suggestions(symbol_obj: CodeSymbol, openai_client: OpenAIClient) -> list:
++def generate_refactoring_suggestions(symbol_obj: CodeSymbol, genai_client: genai.Client) -> list:
+     """
+     Uses an LLM to analyze a CodeSymbol and generate a list of
+     structured refactoring suggestions in JSON format.
+@@ -572,17 +570,17 @@ def generate_refactoring_suggestions(symbol_obj: CodeSymbol, openai_client: Open
+     # --- LLM Call (Non-streaming, JSON mode) ---
+     try:
+         logger.info(f"AI_REFACTOR: Requesting refactoring suggestions for symbol {symbol_obj.id}.")
+-        response = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini", # Or your preferred model that supports JSON mode
+-            response_format={"type": "json_object"}, # Enable JSON mode
+-            messages=[
+-                {"role": "system", "content": "You are a helpful AI code quality analyst that provides refactoring suggestions in a structured JSON format."},
+-                {"role": "user", "content": prompt}
+-            ],
+-            temperature=0.2,
++        response = genai_client.models.generate_content(
++            model=settings.LLM_MODEL_ID,
++            contents=prompt,
++            config=types.GenerateContentConfig(
++                temperature=0.2,
++                response_mime_type="application/json",
++                system_instruction="You are a helpful AI code quality analyst that provides refactoring suggestions in a structured JSON format."
++            )
+         )
+         
+-        content = response.choices[0].message.content
++        content = response.text
+         if not content:
+             logger.warning(f"AI_REFACTOR: LLM returned empty content for symbol {symbol_obj.id}.")
+             return []
+diff --git a/backend/repositories/models.py b/backend/repositories/models.py
+index 4b3e90e..1f99798 100644
+--- a/backend/repositories/models.py
++++ b/backend/repositories/models.py
+@@ -322,60 +322,65 @@ class Notification(models.Model):
+     def __str__(self):
+         return f"Notification for {self.user.username} ({self.get_notification_type_display()}): {self.message[:50]}..."
+     
+-class EmbeddingBatchJob(models.Model):
++class AiBatchJob(models.Model):
++    """
++    DEPRECATED: This model was used for tracking OpenAI batch jobs.
++    Since migrating to Gemini, we now use direct embedding generation
++    instead of batch jobs. This model is kept for historical data only.
++    """
+     # Link to the repository this batch job is for
+     repository = models.ForeignKey(
+-        'Repository', # Use string reference if Repository is defined later in file or in another app's models.py
++        'Repository',
+         on_delete=models.CASCADE, 
+-        null=True, # Can be null if somehow a batch job isn't tied to a specific repo (less likely for us)
++        null=True,
+         blank=True,
+         related_name="embedding_batch_jobs"
+     )
+-    # OpenAI specific IDs
++    # Legacy batch job IDs
+     batch_id = models.CharField(
+         max_length=100, 
+         unique=True,
+-        null=True, # <--- ADD THIS
+-        blank=True,  # OpenAI batch IDs are unique
+-        db_index=True, # Good for querying by batch_id
+-        help_text="OpenAI Batch API Job ID"
++        null=True,
++        blank=True,
++        db_index=True,
++        help_text="Legacy Batch API Job ID"
+     )
+     input_file_id = models.CharField(
+         max_length=100, 
+-        help_text="OpenAI File ID for the input batch .jsonl file"
++        help_text="Legacy File ID for the input batch .jsonl file"
+     )
+     output_file_id = models.CharField(
+         max_length=100, 
+         null=True, 
+         blank=True,
+-        help_text="OpenAI File ID for the output results .jsonl file"
++        help_text="Legacy File ID for the output results .jsonl file"
+     )
+     error_file_id = models.CharField(
+         max_length=100, 
+         null=True, 
+         blank=True,
+-        help_text="OpenAI File ID for the error details .jsonl file"
++        help_text="Legacy File ID for the error details .jsonl file"
+     )
+     class JobType(models.TextChoices):
+         SYMBOL_EMBEDDING = 'SYMBOL_EMBEDDING', 'Symbol Embedding'
+-        KNOWLEDGE_CHUNK_EMBEDDING = 'KNOWLEDGE_CHUNK_EMBEDDING', 'Knowledge Chunk Embedding'    
++        KNOWLEDGE_CHUNK_EMBEDDING = 'KNOWLEDGE_CHUNK_EMBEDDING', 'Knowledge Chunk Embedding'
++        DOCSTRING_GENERATION = 'DOCSTRING_GENERATION', 'Docstring Generation'
+     job_type = models.CharField(
+         max_length=30,
+         choices=JobType.choices,
+-        default=JobType.SYMBOL_EMBEDDING, # Or make it required on creation
++        default=JobType.SYMBOL_EMBEDDING,
+         help_text="The type of content this batch job is for."
+     )
+     class JobStatus(models.TextChoices):
+-        # Custom status before OpenAI Batch API is involved
+-        PENDING_SUBMISSION = 'pending_submission', 'Pending Submission to OpenAI' 
+-        # OpenAI Batch API Statuses (mirroring theirs)
++        # Legacy statuses from batch API workflow
++        PENDING_SUBMISSION = 'pending_submission', 'Pending Submission'
+         VALIDATING = 'validating', 'Validating'
+-        FAILED_VALIDATION = 'failed_validation', 'Failed Validation' # If input file fails validation
++        FAILED_VALIDATION = 'failed_validation', 'Failed Validation'
+         IN_PROGRESS = 'in_progress', 'In Progress'
+         FINALIZING = 'finalizing', 'Finalizing'
+-        COMPLETED = 'completed', 'Completed by OpenAI'
+-        FAILED = 'failed', 'Failed by OpenAI'
+-        EXPIRED = 'expired', 'Expired by OpenAI'
++        COMPLETED = 'completed', 'Completed'
++        FAILED = 'failed', 'Failed'
++        EXPIRED = 'expired', 'Expired'
+         CANCELLING = 'cancelling', 'Cancelling'
+         CANCELLED = 'cancelled', 'Cancelled'
+         RESULTS_PROCESSING = 'results_processing', 'Processing Results'
+@@ -391,27 +396,27 @@ class EmbeddingBatchJob(models.Model):
+     )
+     
+     # Timestamps
+-    output_file_id = models.CharField(max_length=100, null=True, blank=True, help_text="The ID of the output file from a completed OpenAI job.")
++    output_file_id = models.CharField(max_length=100, null=True, blank=True, help_text="The ID of the output file from a completed batch job.")
+     completed_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the job was confirmed as completed by our poller.")
+     created_at = models.DateTimeField(auto_now_add=True)
+-    updated_at = models.DateTimeField(auto_now=True) # Tracks last status update or poll
++    updated_at = models.DateTimeField(auto_now=True)
+     submitted_to_openai_at = models.DateTimeField(null=True, blank=True)
+-    openai_completed_at = models.DateTimeField(null=True, blank=True) # When OpenAI marks it complete
+-    results_processed_at = models.DateTimeField(null=True, blank=True) # When we finish DB updates
++    openai_completed_at = models.DateTimeField(null=True, blank=True)
++    results_processed_at = models.DateTimeField(null=True, blank=True)
+ 
+-    # Metadata from OpenAI or our own
+-    openai_metadata = models.JSONField(null=True, blank=True, help_text="Metadata from OpenAI Batch object")
++    # Metadata
++    openai_metadata = models.JSONField(null=True, blank=True, help_text="Legacy metadata from batch API")
+     custom_metadata = models.JSONField(null=True, blank=True, help_text="Custom metadata for this job")
+     error_details = models.TextField(null=True, blank=True, help_text="Details of any processing errors")
+ 
+     def __str__(self):
+-        return f"Embedding Batch {self.batch_id or 'N/A'} for Repo {self.repository_id or 'N/A'} - Status: {self.get_status_display()}"
++        return f"AI Batch {self.batch_id or 'N/A'} for Repo {self.repository_id or 'N/A'} - Status: {self.get_status_display()}"
+ 
+     class Meta:
+-        db_table = 'embedding_batch_jobs'
++        db_table = 'ai_batch_jobs'
+         ordering = ['-created_at']
+-        verbose_name = "Embedding Batch Job"
+-        verbose_name_plural = "Embedding Batch Jobs"
++        verbose_name = "AI Batch Job (Deprecated)"
++        verbose_name_plural = "AI Batch Jobs (Deprecated)"
+ 
+ class Insight(models.Model):
+     """
+diff --git a/backend/repositories/tasks.py b/backend/repositories/tasks.py
+index 72aab38..1cd1629 100644
+--- a/backend/repositories/tasks.py
++++ b/backend/repositories/tasks.py
+@@ -22,7 +22,7 @@ import datetime
+ import tempfile
+ from django.utils import timezone
+ from django.db import transaction,models  # Import the transaction module
+-from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
++from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,AiBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
+ from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
+ from allauth.socialaccount.models import SocialAccount
+ import xml.etree.ElementTree as ET
+@@ -30,14 +30,12 @@ from django.core.files.storage import default_storage
+ from git import Repo, GitCommandError # <--- Import GitPython
+ 
+ from .models import TestCoverageReport, FileCoverage, CodeFile, Repository
+-OPENAI_EMBEDDING_BATCH_SIZE = 50
+-OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
++from google import genai
++from google.genai import types
++
+ # Define the path to our compiled Rust binary INSIDE the container
+ REPO_CACHE_BASE_PATH = "/var/repos"
+-from openai import OpenAI # Import the OpenAI library
+ RUST_ENGINE_PATH = "/app/engine/helix-engine/target/release/helix-engine"
+-OPENAI_CLIENT = OpenAI()
+-OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+ from django.core.cache import cache
+ 
+ @app.task
+@@ -61,6 +59,9 @@ def process_repository(repo_id, is_local=False, local_path=None):
+         repo.status = Repository.Status.INDEXING
+         repo.save(update_fields=['status'])
+ 
++        # Define user_who_added_repo early so it's available for both local and GitHub repos
++        user_who_added_repo = repo.added_by
++        
+         # Handle local repositories differently
+         if is_local or repo.repository_type == 'local':
+             print(f"PROCESS_REPO_TASK: Processing local repository from path: {local_path}")
+@@ -335,12 +336,11 @@ def process_repository(repo_id, is_local=False, local_path=None):
+             print(f"PROCESS_REPO_TASK: Finished Pass 1. Processed {len(processed_unique_ids_from_rust)} symbols from Rust output.")
+ 
+             # PASS 1.5: Generate Embeddings
+-            if OPENAI_CLIENT: # Only submit if client is available
+-                print(f"PROCESS_REPO_TASK: Dispatching asynchronous batch embedding job for repo {repo.id}...")
+-                submit_embedding_batch_job_task.delay(repo_id=repo.id)
+-
++            if settings.GOOGLE_API_KEY: # Only submit if Gemini API key is available
++                print(f"PROCESS_REPO_TASK: Dispatching embedding generation task for repo {repo.id}...")
++                generate_embeddings_direct_task.delay(repo_id=repo.id)
+             else:
+-                print("PROCESS_REPO_TASK: Skipping embedding job submission as OpenAI client is not available.")
++                print("PROCESS_REPO_TASK: Skipping embedding generation as Gemini API key is not available.")
+             # --- END NEW ---
+ 
+             # PASS 2: Link Dependencies
+@@ -694,22 +694,26 @@ def get_source_for_symbol_in_task(symbol_obj: CodeSymbol) -> str | None:
+         return "# Error: Source file not found in cache."
+     return None # Should not be reached if logic is correct
+ 
+-# --- Helper to call OpenAI for docstring (non-streaming) ---
+-def call_openai_for_docstring(prompt: str, openai_client: OpenAI | None) -> str | None:
+-    if not openai_client:
+-        print("WARNING_HELPER: OpenAI client not provided to call_openai_for_docstring.")
+-        return None
++# --- Helper to call Gemini for docstring generation ---
++def call_gemini_for_docstring(prompt: str) -> str | None:
++    """Generate a docstring using Gemini API"""
+     try:
+-        # Ensure you are using the correct API structure for your OpenAI library version
+-        # For openai >= 1.0.0
+-        completion = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini", # Cheaper/faster for batch, consider gpt-4-turbo-preview for quality
+-            messages=[
+-                {"role": "system", "content": "You are an expert Python programmer. Your task is to write a concise, professional, Google-style docstring for the given function. Do not include the function signature itself, only the docstring content inside triple quotes. Start with a one-line summary. Then, describe the arguments, and what the function returns. If context is provided about callers/callees, use it to make the docstring more informative."},
+-                {"role": "user", "content": prompt}
+-            ]
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        response = genai_client.models.generate_content(
++            model=settings.LLM_MODEL_ID,
++            contents=[
++                types.Content(
++                    role="user",
++                    parts=[types.Part.from_text(prompt)]
++                )
++            ],
++            config=types.GenerateContentConfig(
++                temperature=0.4,
++                max_output_tokens=800,
++                system_instruction="You are an expert Python programmer. Write a concise, professional, Google-style docstring for the given function. Do not include the function signature itself, only the docstring content. Start with a one-line summary, then describe arguments and return values."
++            )
+         )
+-        generated_content = completion.choices[0].message.content
++        generated_content = response.text
+         
+         # Clean the docstring (remove surrounding quotes if AI adds them, strip whitespace)
+         if generated_content:
+@@ -721,7 +725,7 @@ def call_openai_for_docstring(prompt: str, openai_client: OpenAI | None) -> str
+             return generated_content
+         return None
+     except Exception as e:
+-        print(f"ERROR_HELPER: Error calling OpenAI for docstring: {e}")
++        print(f"ERROR_HELPER: Error calling Gemini for docstring: {e}")
+         return None
+     
+ @app.task(bind=True, max_retries=2, default_retry_delay=180) # Fewer retries, longer delay for batch
+@@ -757,10 +761,9 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
+ 
+     print(f"Found {len(symbols_to_document)} symbols to document in {code_file.file_path} (ID: {code_file_id}).")
+     
+-    openai_client = OPENAI_CLIENT
+-    
+-    if not openai_client:
+-        return {"status": "error", "message": "OpenAI client not available. Cannot generate documentation."}
++    # Check if Gemini API key is available
++    if not settings.GOOGLE_API_KEY:
++        return {"status": "error", "message": "Gemini API key not available. Cannot generate documentation."}
+ 
+     successful_generations = 0
+     failed_generations = 0
+@@ -773,16 +776,14 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
+             continue
+         
+         prompt = f"Generate a Python docstring for the following code snippet (file: {symbol.code_file.file_path if symbol.code_file else symbol.code_class.code_file.file_path}, symbol: {symbol.name}):\n\n```python\n{source_code}\n```"
+-        # Add contextual prompting here later if desired (callers/callees)
+         
+         print(f"Generating doc for: {symbol.unique_id or symbol.name} (ID: {symbol.id})")
+-        docstring_content = call_openai_for_docstring(prompt, openai_client)
++        docstring_content = call_gemini_for_docstring(prompt)
+ 
+         if docstring_content:
+             symbol.documentation = docstring_content
+             symbol.documentation_hash = symbol.content_hash
+-            symbol.documentation_status = CodeSymbol.DocStatus.FRESH # Or some other status
+- # Mark as fresh
++            symbol.documentation_status = CodeSymbol.DocStatus.FRESH
+             try:
+                 symbol.save(update_fields = ['documentation', 'documentation_hash', 'documentation_status'])
+                 print(f"Generated and saved doc for: {symbol.unique_id or symbol.name}")
+@@ -794,7 +795,7 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
+             print(f"Failed to generate doc for: {symbol.unique_id or symbol.name}")
+             failed_generations += 1
+         
+-        time.sleep(0.1) # Basic rate limiting: 0.5 seconds between OpenAI calls
++        time.sleep(0.2) # Basic rate limiting between Gemini calls
+     
+     print(f"BATCH_DOCS_TASK: Triggering stats recalculation for repo {repo_id} after {successful_generations} successful generations.")
+     calculate_documentation_coverage_task.delay(repo_id)
+@@ -1012,10 +1013,9 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
+         print(f"BATCH_DOC_GEN_TASK: ERROR - Creating/updating AsyncTaskStatus for {task_id}: {e}")
+         # Allow task to proceed but status won't be fully tracked if task_status_obj is None
+ 
+-    # Use the globally initialized OPENAI_CLIENT if available
+-    current_openai_client = OPENAI_CLIENT 
+-    if not current_openai_client:
+-        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed)."
++    # Check if Gemini API key is available
++    if not settings.GOOGLE_API_KEY:
++        message = "Gemini API key not available (GOOGLE_API_KEY not set)."
+         print(f"BATCH_DOC_GEN_TASK: {message}")
+         if task_status_obj:
+             task_status_obj.status = AsyncTaskStatus.TaskStatus.FAILURE
+@@ -1087,7 +1087,7 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
+             prompt = f"Generate a Python docstring for the following code snippet (file: {symbol_file_path_for_prompt}, symbol: {symbol.name}):\n\n```python\n{source_code}\n```"
+             
+             print(f"BATCH_DOC_GEN_TASK: Generating doc for: {symbol.unique_id or symbol.name} (ID: {symbol.id})")
+-            docstring_content = call_openai_for_docstring(prompt, current_openai_client)
++            docstring_content = call_gemini_for_docstring(prompt)
+ 
+             if docstring_content:
+                 symbol.documentation = docstring_content
+@@ -1595,141 +1595,92 @@ def calculate_documentation_coverage_task(repo_id):
+     except Repository.DoesNotExist:
+         print(f"COVERAGE_TASK: Repository with id={repo_id} not found.")
+         return None
+-@app.task(bind=True, max_retries=3, default_retry_delay=60) # Added retry for robustness
+-def submit_embedding_batch_job_task(self, repo_id: int):
+-    task_id = self.request.id # Celery task ID of this submission task
+-    print(f"EMBED_BATCH_SUBMIT_TASK: Started (ID: {task_id}) for repo_id {repo_id}")
+-
+-    if not OPENAI_CLIENT:
+-        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed). Cannot submit embedding batch."
+-        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
+-        # Potentially create an EmbeddingBatchJob record with a FAILED_SUBMISSION status
+-        # For now, we just log and exit.
+-        return {"status": "error", "message": message}
+-
++@app.task
++def generate_embeddings_direct_task(repo_id: int):
++    """
++    Directly generates embeddings for all symbols in the repository
++    using Gemini's batch_embed_contents API.
++    Replaces the OpenAI batch embedding workflow.
++    """
++    print(f"EMBED_TASK: Starting direct embedding generation for repo_id {repo_id}")
++    
+     try:
+         repo = Repository.objects.get(id=repo_id)
+     except Repository.DoesNotExist:
+-        print(f"EMBED_BATCH_SUBMIT_TASK: Repository with ID {repo_id} not found.")
++        print(f"EMBED_TASK: Repository {repo_id} not found.")
+         return {"status": "error", "message": f"Repository {repo_id} not found."}
+ 
++    # Get all symbols that need embeddings
+     symbols_to_embed = CodeSymbol.objects.filter(
+-        (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)),
+-        embedding__isnull=True # Embed only if embedding is currently null
+-    ).only('id', 'name', 'documentation', 'unique_id') # Fetch only needed fields
++        Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo),
++        embedding__isnull=True
++    ).only('id', 'name', 'documentation')
+ 
+     if not symbols_to_embed.exists():
+-        message = f"No symbols requiring embedding found for repository {repo.full_name}."
+-        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
+-        return {"status": "success", "message": message, "batch_id": None}
+-
+-    print(f"EMBED_BATCH_SUBMIT_TASK: Preparing batch file for {symbols_to_embed.count()} symbols from repo {repo.full_name}.")
+-
+-    batch_requests_for_jsonl = []
+-    # Keep track of symbol pks for which requests are created, to update them later
+-    # if we decide to mark them as "embedding_job_submitted"
+-    symbol_pks_in_batch = [] 
++        print(f"EMBED_TASK: No symbols requiring embedding for repository {repo.full_name}.")
++        return {"status": "success", "message": "No symbols needed embedding."}
+ 
++    print(f"EMBED_TASK: Processing {symbols_to_embed.count()} symbols for repo {repo.full_name}.")
++    
++    # Initialize Gemini client
++    genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++    
++    # Process in batches of 100 (Gemini can handle larger batches than OpenAI)
++    BATCH_SIZE = 100
++    symbol_batch_texts = []
++    symbol_batch_objs = []
++    total_processed = 0
++    
+     for symbol in symbols_to_embed:
+-        # custom_id must be unique within the batch file, max 64 chars.
+-        # Using `symbol-{pk}` is a good pattern.
+-        custom_id = f"symbol-{symbol.id}" 
+-        symbol_pks_in_batch.append(symbol.id)
+-
++        # Combine name and documentation for richer embeddings
+         text_to_embed = symbol.name
+         if symbol.documentation:
+-            # OpenAI recommends replacing newlines with spaces for their embedding models.
+             doc_cleaned = symbol.documentation.replace("\n", " ").strip()
+-            if doc_cleaned: # Only append if there's actual content after cleaning
+-                text_to_embed += f"\n\n{doc_cleaned}" # Use a clear separator
+-
+-        batch_requests_for_jsonl.append({
+-            "custom_id": custom_id,
+-            "method": "POST",
+-            "url": "/v1/embeddings", # Correct endpoint for embeddings
+-            "body": {
+-                "model": OPENAI_EMBEDDING_MODEL, # Your configured embedding model
+-                "input": text_to_embed
+-                # "encoding_format": "float", # Default is float, can also be "base64"
+-                # "dimensions": 1536 # Optional: if using a model that supports other dimensions
+-            }
+-        })
+-        
+-        # Adhere to OpenAI's per-batch request limit
+-        if len(batch_requests_for_jsonl) >= OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS:
+-            print(f"EMBED_BATCH_SUBMIT_TASK: Reached max requests ({OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS}) "
+-                  f"for a single batch file. Processing this batch and will skip remaining symbols for now.")
+-            break
+-            # A more advanced implementation would create multiple batch jobs.
+-
+-    if not batch_requests_for_jsonl:
+-        message = f"No valid embedding requests generated for repository {repo.full_name}."
+-        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
+-        return {"status": "success", "message": message, "batch_id": None}
+-
+-    # Create an initial EmbeddingBatchJob record to track this attempt
+-    # We'll update it with OpenAI IDs once the submission is successful
+-    job_record = EmbeddingBatchJob.objects.create(
+-        repository=repo,
+-        status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
+-        custom_metadata={"celery_task_id": task_id, "symbol_count": len(batch_requests_for_jsonl)}
+-    )
+-
+-    batch_input_file_path = None
+-    job_record = None # Initialize job_record as None
+-    try:
+-        # 1. Prepare and upload the file to OpenAI first.
+-        with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
+-            for request_data in batch_requests_for_jsonl:
+-                tmp_file.write(json.dumps(request_data) + "\n")
+-            batch_input_file_path = tmp_file.name
+-        
+-        with open(batch_input_file_path, "rb") as f_for_upload:
+-            uploaded_file = OPENAI_CLIENT.files.create(file=f_for_upload, purpose="batch")
+-
+-        job_record = EmbeddingBatchJob(
+-            repository=repo,
+-            job_type=EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING,
+-            status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
+-            input_file_id=uploaded_file.id, # We already have this
+-        )
+-
+-        job_record.save() # Now it has an ID.
+-
+-        # 3. Now, create the batch job on OpenAI, passing our database ID in the metadata.
+-        openai_batch = OPENAI_CLIENT.batches.create(
+-            input_file_id=uploaded_file.id,
+-            endpoint="/v1/embeddings",
+-            completion_window="24h",
+-            metadata={"helix_job_id": str(job_record.id), "repo_id": str(repo.id)}
+-        )
+-        
+-        # 4. NOW that we have the real batch_id, update our record and save again.
+-        job_record.batch_id = openai_batch.id
+-        job_record.status = openai_batch.status
+-        job_record.submitted_to_openai_at = timezone.now()
+-        job_record.openai_metadata = openai_batch.to_dict()
+-        job_record.save()
++            if doc_cleaned:
++                text_to_embed += f" {doc_cleaned}"
+         
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: OpenAI Batch job created. Batch ID: {openai_batch.id} for Job ID {job_record.id}")
++        symbol_batch_texts.append(text_to_embed)
++        symbol_batch_objs.append(symbol)
+         
+-        return {
+-            "status": "success", "message": "Batch job submitted.",
+-            "helix_job_id": job_record.id, "openai_batch_id": openai_batch.id
+-        }
+-
+-    except Exception as e:
+-        error_message = f"Error during batch creation: {str(e)}"
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {error_message}")
+-        # If the job record was created, mark it as failed.
+-        if job_record and job_record.pk:
+-            job_record.status = EmbeddingBatchJob.JobStatus.FAILED
+-            job_record.error_details = error_message
+-            job_record.save()
+-        return {"status": "error", "message": error_message}
+-    finally:
+-        if batch_input_file_path and os.path.exists(batch_input_file_path):
+-            os.remove(batch_input_file_path)
++        # When batch is full, process it
++        if len(symbol_batch_texts) >= BATCH_SIZE:
++            try:
++                response = genai_client.models.batch_embed_contents(
++                    model=settings.EMBEDDING_MODEL_ID,
++                    contents=symbol_batch_texts
++                )
++                
++                # Update symbols with their embeddings
++                for i, embedding in enumerate(response.embeddings):
++                    symbol_batch_objs[i].embedding = embedding.values
++                
++                CodeSymbol.objects.bulk_update(symbol_batch_objs, ['embedding'], batch_size=100)
++                total_processed += len(symbol_batch_objs)
++                print(f"EMBED_TASK: Processed {total_processed}/{symbols_to_embed.count()} symbols.")
++                
++            except Exception as e:
++                print(f"EMBED_TASK: Error processing batch: {e}")
++            
++            # Reset batch
++            symbol_batch_texts = []
++            symbol_batch_objs = []
++    
++    # Process remaining symbols
++    if symbol_batch_texts:
++        try:
++            response = genai_client.models.batch_embed_contents(
++                model=settings.EMBEDDING_MODEL_ID,
++                contents=symbol_batch_texts
++            )
++            for i, embedding in enumerate(response.embeddings):
++                symbol_batch_objs[i].embedding = embedding.values
++            CodeSymbol.objects.bulk_update(symbol_batch_objs, ['embedding'], batch_size=100)
++            total_processed += len(symbol_batch_objs)
++            print(f"EMBED_TASK: Completed. Processed {total_processed} symbols total.")
++        except Exception as e:
++            print(f"EMBED_TASK: Error processing final batch: {e}")
++    
++    return {"status": "success", "message": f"Generated embeddings for {total_processed} symbols."}
+             
+ @app.task
+ def generate_insights_on_change_task(repo_id: int, commit_hash: str = None, diff_report: dict = None):
+@@ -1795,157 +1746,85 @@ def generate_insights_on_change_task(repo_id: int, commit_hash: str = None, diff
+     else:
+         print(f"INSIGHTS_TASK: No structural changes found to generate insights for repo {repo_id}.")
+ 
+-@app.task(bind=True)
+-def submit_knowledge_chunk_embedding_batch_task(self, repo_id: int):
++@app.task
++def generate_knowledge_embeddings_direct_task(repo_id: int):
+     """
+-    Creates and submits a new batch job to OpenAI for embedding KnowledgeChunk records.
+-
+-    This task queries for KnowledgeChunk objects that do not yet have an embedding,
+-    formats them into a .jsonl file, uploads the file, and creates the batch job.
+-    It is designed to be triggered after `index_repository_knowledge_task` has
+-    created the content chunks.
++    Directly generates embeddings for all KnowledgeChunks in the repository
++    using Gemini's batch_embed_contents API.
++    Replaces the OpenAI batch embedding workflow for knowledge chunks.
+     """
+-    task_id = self.request.id
+-    print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Started (ID: {task_id}) for repo_id {repo_id}")
+-
+-    # 1. Pre-flight check for OpenAI Client
+-    if not OPENAI_CLIENT:
+-        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed). Cannot submit embedding batch."
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {message}")
+-        # We cannot proceed, so we exit.
+-        return {"status": "error", "message": message}
+-
+-    # 2. Fetch Repository
++    print(f"KNOWLEDGE_EMBED_TASK: Starting direct embedding generation for repo_id {repo_id}")
++    
+     try:
+         repo = Repository.objects.get(id=repo_id)
+     except Repository.DoesNotExist:
+-        message = f"Repository with ID {repo_id} not found."
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {message}")
+-        return {"status": "error", "message": message}
++        print(f"KNOWLEDGE_EMBED_TASK: Repository {repo_id} not found.")
++        return {"status": "error", "message": f"Repository {repo_id} not found."}
+ 
+-    # 3. Query for KnowledgeChunks that need embedding
++    # Get all knowledge chunks that need embeddings
+     chunks_to_embed = KnowledgeChunk.objects.filter(
+         repository=repo,
+-        embedding__isnull=True  # The primary condition for selecting chunks
+-    ).only('id', 'content')     # Fetch only the fields necessary for the batch file
++        embedding__isnull=True
++    ).only('id', 'content')
+ 
+     if not chunks_to_embed.exists():
+-        message = f"No new knowledge chunks requiring embedding found for repository {repo.full_name}."
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {message}")
+-        return {"status": "success", "message": message, "batch_id": None}
+-
+-    print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Preparing batch file for {chunks_to_embed.count()} knowledge chunks from repo '{repo.full_name}'.")
+-
+-    # 4. Prepare the requests for the JSONL file
+-    batch_requests_for_jsonl = []
+-    chunk_pks_in_batch = []
++        print(f"KNOWLEDGE_EMBED_TASK: No knowledge chunks requiring embedding for repository {repo.full_name}.")
++        return {"status": "success", "message": "No knowledge chunks needed embedding."}
+ 
++    print(f"KNOWLEDGE_EMBED_TASK: Processing {chunks_to_embed.count()} knowledge chunks for repo {repo.full_name}.")
++    
++    # Initialize Gemini client
++    genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++    
++    # Process in batches of 100
++    BATCH_SIZE = 100
++    chunk_batch_texts = []
++    chunk_batch_objs = []
++    total_processed = 0
++    
+     for chunk in chunks_to_embed:
+-        # The custom_id must be unique within the batch file and max 64 chars.
+-        # `chunk-{pk}` is a robust pattern.
+-        custom_id = f"chunk-{chunk.id}"
+-        chunk_pks_in_batch.append(chunk.id)
+-
+-        # The content from the chunk is already formatted with context.
+-        text_to_embed = chunk.content
+-
+-        batch_requests_for_jsonl.append({
+-            "custom_id": custom_id,
+-            "method": "POST",
+-            "url": "/v1/embeddings",
+-            "body": {
+-                "model": OPENAI_EMBEDDING_MODEL,
+-                "input": text_to_embed
+-            }
+-        })
+-        
+-        # Adhere to OpenAI's documented limit per batch file.
+-        if len(batch_requests_for_jsonl) >= OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS:
+-            print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Reached max requests ({OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS}). "
+-                  f"Submitting a partial batch. Another run will be needed for remaining chunks.")
+-            break
+-
+-    if not batch_requests_for_jsonl:
+-        message = f"No valid embedding requests were generated for repository {repo.full_name}."
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {message}")
+-        return {"status": "success", "message": message, "batch_id": None}
+-
+-    # 5. Create our internal job record to track this submission
+-    job_record = EmbeddingBatchJob.objects.create(
+-        repository=repo,
+-        job_type=EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING,
+-        status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
+-        custom_metadata={"celery_task_id": task_id, "chunk_count": len(batch_requests_for_jsonl)}
+-    )
+-
+-    batch_input_file_path = None
+-    try:
+-        # 6. Create the temporary .jsonl file
+-        with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
+-            for request_data in batch_requests_for_jsonl:
+-                tmp_file.write(json.dumps(request_data) + "\n")
+-            batch_input_file_path = tmp_file.name
++        chunk_batch_texts.append(chunk.content)
++        chunk_batch_objs.append(chunk)
+         
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Batch input file created at {batch_input_file_path} for Job ID {job_record.id}")
+-
+-        # 7. Upload the file to OpenAI
+-        with open(batch_input_file_path, "rb") as f_for_upload:
+-            uploaded_file = OPENAI_CLIENT.files.create(
+-                file=f_for_upload,
+-                purpose="batch"
++        # When batch is full, process it
++        if len(chunk_batch_texts) >= BATCH_SIZE:
++            try:
++                response = genai_client.models.batch_embed_contents(
++                    model=settings.EMBEDDING_MODEL_ID,
++                    contents=chunk_batch_texts
++                )
++                
++                # Update chunks with their embeddings
++                for i, embedding in enumerate(response.embeddings):
++                    chunk_batch_objs[i].embedding = embedding.values
++                
++                KnowledgeChunk.objects.bulk_update(chunk_batch_objs, ['embedding'], batch_size=100)
++                total_processed += len(chunk_batch_objs)
++                print(f"KNOWLEDGE_EMBED_TASK: Processed {total_processed}/{chunks_to_embed.count()} chunks.")
++                
++            except Exception as e:
++                print(f"KNOWLEDGE_EMBED_TASK: Error processing batch: {e}")
++            
++            # Reset batch
++            chunk_batch_texts = []
++            chunk_batch_objs = []
++    
++    # Process remaining chunks
++    if chunk_batch_texts:
++        try:
++            response = genai_client.models.batch_embed_contents(
++                model=settings.EMBEDDING_MODEL_ID,
++                contents=chunk_batch_texts
+             )
+-        
+-        job_record.input_file_id = uploaded_file.id
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Batch input file uploaded. OpenAI File ID: {uploaded_file.id}")
+-
+-        # 8. Create the batch job using the uploaded file
+-        openai_batch = OPENAI_CLIENT.batches.create(
+-            input_file_id=uploaded_file.id,
+-            endpoint="/v1/embeddings",
+-            completion_window="24h",
+-            metadata={
+-                "helix_cme_job_id": str(job_record.id),
+-                "repository_id": str(repo.id),
+-                "description": f"Helix CME: Knowledge Chunk embedding for {repo.full_name}"
+-            }
+-        )
+-        
+-        # 9. Update our internal record with the crucial IDs and status from OpenAI
+-        job_record.batch_id = openai_batch.id
+-        job_record.status = openai_batch.status # This will likely be 'validating'
+-        job_record.submitted_to_openai_at = timezone.now()
+-        job_record.openai_metadata = openai_batch.to_dict()
+-        job_record.save()
+-        
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: OpenAI Batch job created successfully. OpenAI Batch ID: {openai_batch.id}, "
+-              f"Status: {openai_batch.status} for our Job ID {job_record.id}")
+-        
+-        return {
+-            "status": "success", 
+-            "message": "Knowledge chunk embedding batch job successfully submitted to OpenAI.",
+-            "helix_job_id": job_record.id,
+-            "openai_batch_id": openai_batch.id
+-        }
+-
+-    except Exception as e:
+-        error_message = f"Error during OpenAI batch submission for Job ID {job_record.id}: {str(e)}"
+-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {error_message}")
+-        
+-        # Update our job record to reflect the failure
+-        job_record.status = EmbeddingBatchJob.JobStatus.FAILED_VALIDATION # Or a more generic FAILED
+-        job_record.error_details = error_message
+-        job_record.save()
+-        
+-        # Optionally re-raise to have Celery retry the task, though for submission errors,
+-        # it might be better to fix the issue and re-trigger manually.
+-        # self.retry(exc=e) 
+-        return {"status": "error", "message": error_message, "helix_job_id": job_record.id}
++            for i, embedding in enumerate(response.embeddings):
++                chunk_batch_objs[i].embedding = embedding.values
++            KnowledgeChunk.objects.bulk_update(chunk_batch_objs, ['embedding'], batch_size=100)
++            total_processed += len(chunk_batch_objs)
++            print(f"KNOWLEDGE_EMBED_TASK: Completed. Processed {total_processed} chunks total.")
++        except Exception as e:
++            print(f"KNOWLEDGE_EMBED_TASK: Error processing final batch: {e}")
+     
+-    finally:
+-        # 10. Clean up the temporary file from the local filesystem
+-        if batch_input_file_path and os.path.exists(batch_input_file_path):
+-            os.remove(batch_input_file_path)
+-            print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Cleaned up temporary file {batch_input_file_path}")
++    return {"status": "success", "message": f"Generated embeddings for {total_processed} knowledge chunks."}
+ @app.task
+ def index_repository_knowledge_task(repo_id: int):
+     """
+@@ -2006,156 +1885,21 @@ def index_repository_knowledge_task(repo_id: int):
+         KnowledgeChunk.objects.bulk_create(chunks_to_create, batch_size=500)
+         print(f"KNOWLEDGE_INDEX_TASK: Created {len(chunks_to_create)} knowledge chunks (without embeddings).")
+ 
+-        # --- NEW: Dispatch the batch submission task ---
+-        print(f"KNOWLEDGE_INDEX_TASK: Dispatching batch job submission task for repo {repo.id}.")
+-        submit_knowledge_chunk_embedding_batch_task.delay(repo_id=repo.id)
++        # --- NEW: Dispatch the embedding generation task ---
++        print(f"KNOWLEDGE_INDEX_TASK: Dispatching embedding generation task for repo {repo.id}.")
++        generate_knowledge_embeddings_direct_task.delay(repo_id=repo.id)
+         # --- END NEW ---
+ 
+     except Exception as e:
+         print(f"KNOWLEDGE_INDEX_TASK: FATAL - DB error during bulk_create: {e}")
+ 
+-@app.task(bind=True)
+-def poll_and_process_completed_batches_task(self):
+-    """
+-    Periodically polls for in-progress EmbeddingBatchJob records, checks their
+-    status with OpenAI, and processes completed jobs by updating the correct
+-    model (KnowledgeChunk or CodeSymbol) based on the job_type.
+-    """
+-    task_id = self.request.id
+-    print(f"BATCH_POLL_TASK: Started (ID: {task_id})")
+-
+-    if not OPENAI_CLIENT:
+-        print("BATCH_POLL_TASK: Aborting, OpenAI client not available.")
+-        return
+-
+-    # 1. Find our jobs that are currently in-flight with OpenAI.
+-    in_progress_jobs = EmbeddingBatchJob.objects.filter(
+-        status__in=['validating', 'in_progress', 'finalizing']
+-    ).select_related('repository')
+-
+-    if not in_progress_jobs.exists():
+-        print("BATCH_POLL_TASK: No in-progress batch jobs found to poll.")
+-        return
+-
+-    print(f"BATCH_POLL_TASK: Found {in_progress_jobs.count()} in-progress jobs to check.")
++# NOTE: poll_and_process_completed_batches_task has been removed
++# We now use direct Gemini embedding generation instead of OpenAI's batch API
++# so no polling is needed. Embeddings are generated synchronously via:
++# - generate_embeddings_direct_task (for code symbols)
++# - generate_knowledge_embeddings_direct_task (for knowledge chunks)
+ 
+-    for job in in_progress_jobs:
+-        try:
+-            print(f"BATCH_POLL_TASK: Checking status for Job ID {job.id} (OpenAI Batch ID: {job.batch_id})")
+-            
+-            # 2. Retrieve the latest status of the batch job from OpenAI.
+-            openai_batch = OPENAI_CLIENT.batches.retrieve(job.batch_id)
+-            
+-            # Update our local record with the latest status and metadata.
+-            job.status = openai_batch.status
+-            job.openai_metadata = openai_batch.to_dict()
+-            job.save(update_fields=['status', 'openai_metadata'])
+-
+-            # 3. Check if the job is completed and ready for processing.
+-            if openai_batch.status == 'completed':
+-                print(f"BATCH_POLL_TASK: Job {job.id} (Type: {job.job_type}) is COMPLETED. Processing results...")
+-                
+-                output_file_id = openai_batch.output_file_id
+-                if not output_file_id:
+-                    raise Exception("Batch job completed but no output_file_id was provided by OpenAI.")
+ 
+-                # 4. Download the output file content from OpenAI.
+-                output_file_content_response = OPENAI_CLIENT.files.content(output_file_id)
+-                output_data = output_file_content_response.read().decode('utf-8')
+-                
+-                output_lines = output_data.strip().split('\n')
+-                print(f"BATCH_POLL_TASK: Downloaded output file for job {job.id} with {len(output_lines)} lines.")
+-                
+-                updates_to_perform = {} # {pk: embedding_vector}
+-
+-                for i, line in enumerate(output_lines):
+-                    if not line.strip(): continue
+-                    
+-                    try:
+-                        result_item = json.loads(line)
+-                        custom_id = result_item.get('custom_id')
+-
+-                        if not custom_id: continue
+-                        if result_item.get('error'): continue
+-
+-                        embedding = result_item.get('response', {}).get('body', {}).get('data', [{}])[0].get('embedding')
+-                        if not isinstance(embedding, list): continue
+-                        
+-                        # --- REFACTORED LOGIC: Check job_type to parse custom_id correctly ---
+-                        pk = None
+-                        if job.job_type == EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING and custom_id.startswith('chunk-'):
+-                            pk = int(custom_id.split('-')[1])
+-                        elif job.job_type == EmbeddingBatchJob.JobType.SYMBOL_EMBEDDING and custom_id.startswith('symbol-'):
+-                            pk = int(custom_id.split('-')[1])
+-                        
+-                        if pk:
+-                            updates_to_perform[pk] = embedding
+-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SUCCESS - Staged update for {job.job_type} ID {pk}.")
+-                        else:
+-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - custom_id '{custom_id}' has invalid format for job type '{job.job_type}'.")
+-                        # --- END REFACTORED LOGIC ---
+-
+-                    except (json.JSONDecodeError, IndexError, KeyError, ValueError) as e:
+-                        print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] FATAL PARSE ERROR - {e}")
+-                        continue
+-
+-                if not updates_to_perform:
+-                    error_msg = "Job completed but no successful updates could be parsed. Check output file."
+-                    print(f"BATCH_POLL_TASK: [Job {job.id}] {error_msg}")
+-                    job.status = EmbeddingBatchJob.JobStatus.RESULTS_FAILED_TO_PROCESS
+-                    job.error_details = error_msg
+-                    job.completed_at = timezone.now()
+-                    job.save()
+-                    continue
+-
+-                # --- REFACTORED LOGIC: Update the correct database model based on job_type ---
+-                with transaction.atomic():
+-                    if job.job_type == EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING:
+-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} KnowledgeChunk records.")
+-                        items_to_update = list(KnowledgeChunk.objects.filter(id__in=updates_to_perform.keys()))
+-                        for item in items_to_update:
+-                            item.embedding = updates_to_perform.get(item.id)
+-                        KnowledgeChunk.objects.bulk_update(items_to_update, ['embedding'], batch_size=500)
+-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(items_to_update)} KnowledgeChunk records.")
+-
+-                    elif job.job_type == EmbeddingBatchJob.JobType.SYMBOL_EMBEDDING:
+-                        # PREREQUISITE: Your CodeSymbol model must have an 'embedding' VectorField.
+-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} CodeSymbol records.")
+-                        items_to_update = list(CodeSymbol.objects.filter(id__in=updates_to_perform.keys()))
+-                        for item in items_to_update:
+-                            item.embedding = updates_to_perform.get(item.id)
+-                        CodeSymbol.objects.bulk_update(items_to_update, ['embedding'], batch_size=500)
+-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(items_to_update)} CodeSymbol records.")
+-                # --- END REFACTORED LOGIC ---
+-
+-                # 7. Finalize our internal job record.
+-                job.output_file_id = output_file_id
+-                job.completed_at = timezone.now()
+-                job.status = EmbeddingBatchJob.JobStatus.RESULTS_PROCESSED
+-                job.save(update_fields=['output_file_id', 'completed_at', 'status'])
+-
+-            elif openai_batch.status in ['failed', 'expired', 'cancelled']:
+-                # Handle terminal failure states.
+-                print(f"BATCH_POLL_TASK: Job {job.id} has failed or expired. Status: {openai_batch.status}")
+-                job.error_details = json.dumps(openai_batch.errors) if openai_batch.errors else f"Job terminated with status: {openai_batch.status}"
+-                job.completed_at = timezone.now()
+-                job.save(update_fields=['error_details', 'completed_at'])
+-            
+-            else:
+-                # Status is still in-flight.
+-                print(f"BATCH_POLL_TASK: Job {job.id} is still in progress. Status: {openai_batch.status}")
+-
+-        except Exception as e:
+-            error_message = f"An unexpected error occurred while processing job {job.id}: {str(e)}"
+-            print(f"BATCH_POLL_TASK: ERROR - {error_message}")
+-            try:
+-                job.status = EmbeddingBatchJob.JobStatus.FAILED
+-                job.error_details = error_message
+-                job.save()
+-            except Exception as save_err:
+-                print(f"BATCH_POLL_TASK: CRITICAL - Could not save failure status for job {job.id}: {save_err}")
+-            
+-            continue # Continue to the next job in the loop
+ @app.task(bind=True)
+ def create_pr_with_changes_task(
+     self,
+@@ -2351,8 +2095,8 @@ def sync_knowledge_index_task(repo_id: int):
+     KnowledgeChunk.objects.bulk_create(chunks_to_create, batch_size=500)
+     print(f"KNOWLEDGE_SYNC_TASK: Created {len(chunks_to_create)} knowledge chunk records.")
+ 
+-    # Dispatch the existing batch embedding task to finish the job
+-    submit_knowledge_chunk_embedding_batch_task.delay(repo_id=repo.id)
++    # Dispatch the embedding generation task to finish the job
++    generate_knowledge_embeddings_direct_task.delay(repo_id=repo.id)
+     print(f"KNOWLEDGE_SYNC_TASK: Dispatched embedding task for repo {repo.id}.")
+ 
+ @app.task
+@@ -2363,15 +2107,10 @@ def generate_and_save_module_readme_task(previous_task_result, repo_id: int, mod
+     """
+     print(f"README_GENERATION_TASK: Starting for repo {repo_id}, path '{module_path}'.")
+ 
+-    client = OPENAI_CLIENT
+-    if not client:
+-        raise Exception("OpenAI client not available in README generation task.")
+-
+     # Call the stream generator, which now handles saving internally.
+     readme_stream = generate_module_readme_stream(
+         repo_id=repo_id,
+-        module_path=module_path,
+-        openai_client=client
++        module_path=module_path
+     )
+     
+     # We must consume the stream for the generation and saving to happen.
+diff --git a/backend/repositories/views.py b/backend/repositories/views.py
+index 5347423..4f9ac01 100644
+--- a/backend/repositories/views.py
++++ b/backend/repositories/views.py
+@@ -2,6 +2,7 @@
+ import os,shutil
+ import subprocess
+ from django.db.models import Q,F  # <--- ADD THIS IMPORT
++from django.conf import settings
+ from rest_framework import generics, permissions
+ from django.core.files.storage import default_storage
+ from rest_framework.parsers import MultiPartParser, FormParser
+@@ -23,13 +24,13 @@ import requests,re
+ from django.http import Http404, HttpResponse
+ from django.http import StreamingHttpResponse # Import Django's native streaming class
+ from django.utils import timezone
+-from openai import OpenAI
+ import tempfile,hashlib
+ from rest_framework import status  # if using Django REST Framework
+ from .tasks import create_docs_pr_for_file_task
+ from .tasks import batch_generate_docstrings_for_files_task, create_pr_for_multiple_files_task # We'll define these tasks next
+ from .diagram_utils import generate_react_flow_data
+-from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
++from google import genai
++from google.genai import types
+ from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
+ from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightSerializer # We can reuse this for results
+ import os
+@@ -41,8 +42,6 @@ from django.contrib.auth import get_user_model
+ User = get_user_model() # <--- 2. Call the function to get the active User model
+ 
+ REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
+-OPENAI_CLIENT_INSTANCE = OpenAIClient()
+-OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
+ from django.db import connection  # For debugging SQL queries
+ 
+ @method_decorator(csrf_exempt, name="dispatch")
+@@ -284,29 +283,27 @@ class FileContentView(APIView):
+             # We could trigger a re-index here in a real product.
+             return Response({"error": "File not found in cache."}, status=404)
+             
+-def openai_stream_generator(prompt: str, openai_client_instance: OpenAIClient | None):
+-    if not openai_client_instance:
+-        print("STREAM_GEN: OpenAI client not available in generator.")
+-        yield "// Error: OpenAI service not configured for streaming.\n"
++def gemini_stream_generator(prompt: str, genai_client_instance: genai.Client | None):
++    if not genai_client_instance:
++        print("STREAM_GEN: Gemini client not available in generator.")
++        yield "// Error: AI service not configured for streaming.\n"
+         return
+-    
+-    # print(f"DEBUG_AI_PROMPT (Contextual Stream - in generator):\n{prompt}\n--------------------") # Moved from view
+ 
+     try:
+-        stream = openai_client_instance.chat.completions.create(
+-            model="gpt-4o-mini", # Fixed model name
+-            messages=[
+-                {"role": "system", "content": "You are a helpful AI programming assistant specialized in writing Python docstrings."},
+-                {"role": "user", "content": prompt} # The full prompt is now constructed in the view
+-            ],
+-            stream=True,
++        # Simplify the call to use string directly, which is supported and robust
++        response = genai_client_instance.models.generate_content_stream(
++            model=settings.LLM_MODEL_ID,
++            contents=prompt,
++            config=types.GenerateContentConfig(
++                system_instruction="You are a helpful AI programming assistant specialized in writing Python docstrings."
++            )
+         )
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
++        for chunk in response:
++            content = chunk.text
+             if content:
+                 yield content
+     except Exception as e:
+-        error_message = f"// Error during OpenAI stream: {str(e)}\n"
++        error_message = f"// Error during Gemini stream: {str(e)}\n"
+         print(f"STREAM_GEN: {error_message}")
+         yield error_message
+ def get_source_for_symbol_from_view(symbol_obj: CodeSymbol) -> str | None:
+@@ -351,87 +348,87 @@ class GenerateDocstringView(APIView):
+     permission_classes = [permissions.IsAuthenticated]
+ 
+     def get(self, request, *args, **kwargs):
+-        function_id = kwargs.get('function_id') # Assuming URL uses 'function_id'
+-        print(f"VIEW_GEN_DOC: Request for symbol_id={function_id}, user={request.user.username}")
++        try:
++            function_id = kwargs.get('function_id')
++            print(f"VIEW_GEN_DOC: Request for symbol_id={function_id}, user={request.user.username}")
+ 
+-        # --- Initialize OpenAI Client ---
+-        openai_client = OPENAI_CLIENT_INSTANCE
+-        
+-        # If client init fails critically, it's better to stop and inform.
+-        if not openai_client:
+-             # Return a non-streaming error response
+-            return Response({"error": "OpenAI service not available or not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
++            if not settings.GOOGLE_API_KEY:
++                return Response({"error": "Google API Key is not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
++
++            # --- Initialize Gemini Client ---
++            try:
++                genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++            except Exception as e:
++                print(f"VIEW_GEN_DOC: Failed to initialize Gemini client: {e}")
++                return Response({"error": f"Failed to initialize AI service: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+ 
+-        try:
+             # Your existing Q filter for ownership check
+             q_filter = Q(id=function_id) & (
+                 Q(code_file__repository__organization__memberships__user=request.user) | 
+                 Q(code_class__code_file__repository__organization__memberships__user=request.user)
+             )
+-            code_symbol_obj = CodeSymbol.objects.select_related(
+-                'code_file__repository', 
+-                'code_class__code_file__repository'
+-            ).get(q_filter)
+-            print(f"VIEW_GEN_DOC: Successfully fetched symbol '{code_symbol_obj.name}' (ID: {code_symbol_obj.id}).")
++            try:
++                code_symbol_obj = CodeSymbol.objects.select_related(
++                    'code_file__repository', 
++                    'code_class__code_file__repository'
++                ).get(q_filter)
++                print(f"VIEW_GEN_DOC: Successfully fetched symbol '{code_symbol_obj.name}' (ID: {code_symbol_obj.id}).")
++            except CodeSymbol.DoesNotExist:
++                print(f"VIEW_GEN_DOC: Symbol with ID {function_id} not found or permission denied for user {request.user.username}.")
++                return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
++
++            # --- Fetch symbol's source code ---
++            function_code = get_source_for_symbol_from_view(code_symbol_obj)
++            
++            if not function_code or function_code.startswith("# Error:"):
++                error_msg = function_code or "Could not retrieve source code for the symbol."
++                print(f"VIEW_GEN_DOC: {error_msg} for symbol {code_symbol_obj.name}")
++                return Response({"error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
++
++            # --- NEW: Fetch Callers and Callees for Context ---
++            callers_qs = CodeDependency.objects.filter(callee=code_symbol_obj).select_related('caller')[:3]
++            callees_qs = CodeDependency.objects.filter(caller=code_symbol_obj).select_related('callee')[:3]
++            
++            callers_names = [dep.caller.name for dep in callers_qs]
++            callees_names = [dep.callee.name for dep in callees_qs]
++            
++            symbol_file_path_for_prompt = "N/A"
++            actual_code_file = code_symbol_obj.code_file or (code_symbol_obj.code_class and code_symbol_obj.code_class.code_file)
++            if actual_code_file:
++                symbol_file_path_for_prompt = actual_code_file.file_path
++                
++            print(f"VIEW_GEN_DOC: Context for '{code_symbol_obj.name}': Callers: {callers_names}, Callees: {callees_names}, File: {symbol_file_path_for_prompt}")
++
++            # --- Construct the full prompt with context ---
++            context_parts = []
++            if callers_names:
++                context_parts.append(f"it is called by: {', '.join(callers_names)}{'...' if len(callers_names) > 3 else ''}")
++            if callees_names:
++                context_parts.append(f"it calls: {', '.join(callees_names)}{'...' if len(callees_names) > 3 else ''}")
++            
++            context_str_for_prompt = ""
++            if context_parts:
++                context_str_for_prompt = f"\n\nFor context, this symbol " + " and ".join(context_parts) + "."
++
++            prompt = (
++                f"You are an expert Python programmer. Your task is to write a concise, professional, "
++                f"Google-style docstring for the Python symbol named '{code_symbol_obj.name}' located in file '{symbol_file_path_for_prompt}'. "
++                f"Do not include the function/method signature itself, only the docstring content inside triple quotes. "
++                f"Start with a one-line summary. Then, if applicable, describe arguments and what it returns."
++                f"{context_str_for_prompt}\n\n"
++                f"Here is the source code for '{code_symbol_obj.name}':\n"
++                f"```python\n{function_code}\n```\n"
++                f"Generate only the docstring content:"
++            )
++            
++            # --- Stream the Response using the generator ---
++            response_stream = gemini_stream_generator(prompt, genai_client) 
++            return StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+ 
+-        except CodeSymbol.DoesNotExist:
+-            print(f"VIEW_GEN_DOC: Symbol with ID {function_id} not found or permission denied for user {request.user.username}.")
+-            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+         except Exception as e:
+-            print(f"VIEW_GEN_DOC: Error fetching symbol {function_id}: {e}")
+-            return Response({"error": "Internal server error fetching symbol."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+-
+-        # --- Fetch symbol's source code ---
+-        # (Using the corrected variable name `code_symbol_obj` from your provided code)
+-        function_code = get_source_for_symbol_from_view(code_symbol_obj) # Use your helper
+-        
+-        if not function_code or function_code.startswith("# Error:"):
+-            error_msg = function_code or "Could not retrieve source code for the symbol."
+-            print(f"VIEW_GEN_DOC: {error_msg} for symbol {code_symbol_obj.name}")
+-            # Return non-streaming error
+-            return Response({"error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+-
+-        # --- NEW: Fetch Callers and Callees for Context ---
+-        callers_qs = CodeDependency.objects.filter(callee=code_symbol_obj).select_related('caller')[:3] # Limit for prompt
+-        callees_qs = CodeDependency.objects.filter(caller=code_symbol_obj).select_related('callee')[:3] # Limit for prompt
+-        
+-        callers_names = [dep.caller.name for dep in callers_qs]
+-        callees_names = [dep.callee.name for dep in callees_qs]
+-        
+-        symbol_file_path_for_prompt = "N/A"
+-        actual_code_file = code_symbol_obj.code_file or (code_symbol_obj.code_class and code_symbol_obj.code_class.code_file)
+-        if actual_code_file:
+-            symbol_file_path_for_prompt = actual_code_file.file_path
+-        
+-        print(f"VIEW_GEN_DOC: Context for '{code_symbol_obj.name}': Callers: {callers_names}, Callees: {callees_names}, File: {symbol_file_path_for_prompt}")
+-
+-        # --- Construct the full prompt with context ---
+-        context_parts = []
+-        if callers_names:
+-            context_parts.append(f"it is called by: {', '.join(callers_names)}{'...' if len(callers_names) > 3 else ''}") # Though already sliced
+-        if callees_names:
+-            context_parts.append(f"it calls: {', '.join(callees_names)}{'...' if len(callees_names) > 3 else ''}")
+-        
+-        context_str_for_prompt = ""
+-        if context_parts:
+-            context_str_for_prompt = f"\n\nFor context, this symbol " + " and ".join(context_parts) + "."
+-
+-        # Your original prompt structure, now with added context
+-        prompt = (
+-            f"You are an expert Python programmer. Your task is to write a concise, professional, "
+-            f"Google-style docstring for the Python symbol named '{code_symbol_obj.name}' located in file '{symbol_file_path_for_prompt}'. "
+-            f"Do not include the function/method signature itself, only the docstring content inside triple quotes. "
+-            f"Start with a one-line summary. Then, if applicable, describe arguments and what it returns."
+-            f"{context_str_for_prompt}\n\n"
+-            f"Here is the source code for '{code_symbol_obj.name}':\n"
+-            f"```python\n{function_code}\n```\n"
+-            f"Generate only the docstring content:"
+-        )
+-        
+-        # --- Stream the Response using the generator ---
+-        # Pass the initialized openai_client to the generator
+-        response_stream = openai_stream_generator(prompt, openai_client) 
+-        return StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
++            import traceback
++            traceback.print_exc()
++            return Response({"error": f"Internal Server Error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+ class SaveDocstringView(APIView):
+     permission_classes = [permissions.IsAuthenticated]
+ 
+@@ -531,12 +528,22 @@ class SemanticSearchView(generics.ListAPIView):
+             return CodeSymbol.objects.none() # Return empty if no query
+ 
+         try:
+-            # 1. Get the embedding for the search query from OpenAI
+-            response = OPENAI_CLIENT_INSTANCE.embeddings.create(
+-                input=query_text,
+-                model=OPENAI_EMBEDDING_MODEL_FOR_SEARCH
++            # 1. Get the embedding for the search query from Gemini
++            genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++            response = genai_client.models.embed_content(
++                model=settings.EMBEDDING_MODEL_ID,
++                contents=query_text
+             )
+-            query_embedding = response.data[0].embedding
++            # Check if response has 'embedding' or 'embeddings' based on SDK version
++            # Usually for single content it is 'embedding'
++            if hasattr(response, 'embedding'):
++                query_embedding = response.embedding.values
++            elif hasattr(response, 'embeddings'):
++                query_embedding = response.embeddings[0].values
++            else:
++                 # Fallback if structure is different (e.g. dict-like access if not typed)
++                 # But standard SDK returns object
++                 query_embedding = response.embedding.values
+ 
+             user_repos = Repository.objects.filter(user=self.request.user)
+ 
+@@ -929,11 +936,10 @@ class MarkNotificationReadView(APIView):
+ 
+ def generate_explanation_stream(
+     symbol_obj: CodeSymbol, 
+-    source_code: str, 
+-    openai_client: OpenAIClient
++    source_code: str
+ ):
+     """
+-    Generates a stream of text chunks for the code explanation.
++    Generates a stream of text chunks for the code explanation using Gemini.
+     """
+     callers_qs = CodeDependency.objects.filter(callee=symbol_obj).select_related('caller')[:3] # Limit for prompt
+     callees_qs = CodeDependency.objects.filter(caller=symbol_obj).select_related('callee')[:3] # Limit for prompt
+@@ -975,25 +981,22 @@ def generate_explanation_stream(
+     print(f"DEBUG_EXPLAIN_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
+ 
+     try:
+-        stream = openai_client.chat.completions.create(
+-            model="gpt-4.1-nano", # e.g., "gpt-3.5-turbo" or "gpt-4"
+-            messages=[
+-                {"role": "system", "content": "You are Helix, a helpful AI programming assistant that explains code clearly and concisely."},
+-                {"role": "user", "content": prompt}
+-            ],
+-            stream=True,
+-            temperature=0.3, # Lower temperature for more factual explanations
+-            max_tokens=1000  # Adjust as needed for desired explanation length
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        response = genai_client.models.generate_content_stream(
++            model=settings.GEMINI_MODEL_ID,
++            contents=prompt,
++            config=types.GenerateContentConfig(
++                temperature=0.3,
++                max_output_tokens=1000,
++                system_instruction="You are Helix, a helpful AI programming assistant that explains code clearly and concisely."
++            )
+         )
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
+-            if content:
+-                yield content
++        for chunk in response:
++            if chunk.text:
++                yield chunk.text
+     except Exception as e:
+         error_message = f"// Helix encountered an error while generating the explanation: {str(e)}"
+         print(f"EXPLAIN_CODE_STREAM_ERROR: {error_message}")
+-        # Stream error message in a way the frontend can parse if it expects text
+-        # Or handle more gracefully if frontend expects structured errors
+         yield error_message
+ 
+ @method_decorator(csrf_exempt, name='dispatch') # If using SessionAuth and POST
+@@ -1003,15 +1006,6 @@ class ExplainCodeView(APIView):
+     def post(self, request, symbol_id, *args, **kwargs): # Changed to POST as it's an action
+         print(f"VIEW_EXPLAIN_CODE: Request for symbol_id: {symbol_id} by user: {request.user.username}")
+ 
+-        openai_client = OPENAI_CLIENT_INSTANCE
+-
+-        if not openai_client:
+-            # Return a non-streaming error if client setup fails
+-            return Response(
+-                {"error": "Helix's explanation service is currently unavailable."}, 
+-                status=status.HTTP_503_SERVICE_UNAVAILABLE
+-            )
+-
+         try:
+             q_filter = Q(id=symbol_id) & (
+                 Q(code_file__repository__organization__memberships__user=request.user) |
+@@ -1038,7 +1032,7 @@ class ExplainCodeView(APIView):
+              print(f"VIEW_EXPLAIN_CODE: Source code retrieval failed: {source_code} for symbol {symbol_obj.name}")
+              return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+ 
+-        response_stream = generate_explanation_stream(symbol_obj, source_code, openai_client)
++        response_stream = generate_explanation_stream(symbol_obj, source_code)
+         
+         # It's good practice to set appropriate headers for streaming
+         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+@@ -1048,11 +1042,10 @@ class ExplainCodeView(APIView):
+     
+ def generate_tests_stream(
+     symbol_obj: CodeSymbol,
+-    source_code: str,
+-    openai_client: OpenAIClient
++    source_code: str
+ ):
+     """
+-    Generates a stream of pytest code for the given symbol.
++    Generates a stream of pytest code for the given symbol using Gemini.
+     """
+     symbol_file_path = symbol_obj.code_file.file_path if symbol_obj.code_file else \
+                        (symbol_obj.code_class.code_file.file_path if symbol_obj.code_class and symbol_obj.code_class.code_file else "N/A")
+@@ -1086,20 +1079,19 @@ def generate_tests_stream(
+     print(f"DEBUG_SUGGEST_TESTS_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
+ 
+     try:
+-        stream = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini", # "gpt-4-turbo-preview" is great for code
+-            messages=[
+-                {"role": "system", "content": "You are a helpful AI programming assistant that writes Python unit tests using pytest."},
+-                {"role": "user", "content": prompt}
+-            ],
+-            stream=True,
+-            temperature=0.4, # A bit of creativity for edge cases, but still factual
+-            max_tokens=1500  # Allow for longer code blocks
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        response = genai_client.models.generate_content_stream(
++            model=settings.GEMINI_MODEL_ID,
++            contents=prompt,
++            config=types.GenerateContentConfig(
++                temperature=0.4,
++                max_output_tokens=1500,
++                system_instruction="You are a helpful AI programming assistant that writes Python unit tests using pytest."
++            )
+         )
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
+-            if content:
+-                yield content
++        for chunk in response:
++            if chunk.text:
++                yield chunk.text
+     except Exception as e:
+         error_message = f"// Helix encountered an error while generating test suggestions: {str(e)}"
+         print(f"SUGGEST_TESTS_STREAM_ERROR: {error_message}")
+@@ -1110,11 +1102,10 @@ def generate_tests_stream(
+ 
+ def generate_cohesive_tests_stream(
+     symbol_ids: list[int],
+-    user: User,
+-    openai_client: OpenAIClient
++    user: User
+ ):
+     """
+-    Generates a single, cohesive pytest file for a list of symbols.
++    Generates a single, cohesive pytest file for a list of symbols using Gemini.
+     """
+     # 1. Fetch all symbols and perform a permission check
+     q_filter = Q(id__in=symbol_ids) & (
+@@ -1180,18 +1171,20 @@ def generate_cohesive_tests_stream(
+ 
+     print(f"DEBUG_COHESIVE_TESTS_PROMPT:\n{final_prompt}\n--------------------")
+ 
+-    # 4. Stream the response from the LLM
++    # 4. Stream the response from Gemini
+     try:
+-        stream = openai_client.chat.completions.create(
+-            model="gpt-4.1-mini",
+-            messages=[{"role": "user", "content": final_prompt}],
+-            stream=True,
+-            temperature=0.3
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        response = genai_client.models.generate_content_stream(
++            model=settings.GEMINI_MODEL_ID,
++            contents=final_prompt,
++            config=types.GenerateContentConfig(
++                temperature=0.3,
++                max_output_tokens=2000
++            )
+         )
+-        for chunk in stream:
+-            content = chunk.choices[0].delta.content
+-            if content:
+-                yield content
++        for chunk in response:
++            if chunk.text:
++                yield chunk.text
+     except Exception as e:
+         yield f"// Helix encountered an error: {str(e)}"
+ 
+@@ -1203,14 +1196,6 @@ class SuggestTestsView(APIView):
+     def post(self, request, symbol_id, *args, **kwargs):
+         print(f"VIEW_SUGGEST_TESTS: Request for symbol_id: {symbol_id} by user: {request.user.username}")
+ 
+-        openai_client = OPENAI_CLIENT_INSTANCE
+-        
+-        if not openai_client:
+-            return Response(
+-                {"error": "Helix's AI service is currently unavailable."}, 
+-                status=status.HTTP_503_SERVICE_UNAVAILABLE
+-            )
+-
+         try:
+             q_filter = Q(id=symbol_id) & (
+                 Q(code_file__repository__organization__memberships__user=request.user) |
+@@ -1232,7 +1217,7 @@ class SuggestTestsView(APIView):
+             print(f"VIEW_SUGGEST_TESTS: {error_msg} for symbol {symbol_obj.name}")
+             return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+ 
+-        response_stream = generate_tests_stream(symbol_obj, source_code, openai_client)
++        response_stream = generate_tests_stream(symbol_obj, source_code)
+         
+         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+         response['X-Accel-Buffering'] = 'no'
+@@ -1246,11 +1231,6 @@ class ClassSummaryView(APIView):
+     def post(self, request, class_id, *args, **kwargs):
+         print(f"VIEW_CLASS_SUMMARY: Request for class_id: {class_id} by user: {request.user.username}")
+ 
+-        openai_client = OPENAI_CLIENT_INSTANCE
+-
+-        if not openai_client:
+-            return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+-
+         try:
+             # Check ownership via the file the class belongs to
+             code_class_obj = CodeClass.objects.select_related(
+@@ -1262,7 +1242,9 @@ class ClassSummaryView(APIView):
+         except CodeClass.DoesNotExist:
+             return Response({"error": "Class not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+         
+-        response_stream = generate_class_summary_stream(code_class_obj, openai_client)
++        # Create Gemini client
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        response_stream = generate_class_summary_stream(code_class_obj, genai_client)
+         
+         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+         response['X-Accel-Buffering'] = 'no'
+@@ -1534,16 +1516,15 @@ class SummarizeModuleView(APIView):
+ 
+         print(f"SUMMARIZE_MODULE_VIEW: Request for repo {repo_id}, path '{module_path}'")
+ 
+-        if not OPENAI_CLIENT_INSTANCE:
+-            return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+-
+         if not Repository.objects.filter(id=repo_id, user=request.user).exists():
+             return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+ 
++        # Create Gemini client
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+         response_stream = generate_module_readme_stream(
+             repo_id=repo_id,
+             module_path=module_path.strip(),
+-            openai_client=OPENAI_CLIENT_INSTANCE
++            genai_client=genai_client
+         )
+         
+         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+@@ -2193,12 +2174,7 @@ class CohesiveTestGenerationView(APIView):
+         if not isinstance(symbol_ids, list) or not symbol_ids:
+             return Response({"error": "A list of 'symbol_ids' is required."}, status=status.HTTP_400_BAD_REQUEST)
+ 
+-        openai_client = OPENAI_CLIENT_INSTANCE
+-        if not openai_client:
+-            return Response({"error": "AI service unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+-
+-        # We will create the new service function next
+-        response_stream = generate_cohesive_tests_stream(symbol_ids, request.user, openai_client)
++        response_stream = generate_cohesive_tests_stream(symbol_ids, request.user)
+         
+         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+         response['X-Accel-Buffering'] = 'no'
+@@ -2315,7 +2291,6 @@ class SymbolAnalysisView(APIView):
+     permission_classes = [permissions.IsAuthenticated]
+ 
+     def get(self, request, symbol_id, *args, **kwargs):
+-        openai_client = OPENAI_CLIENT_INSTANCE
+         try:
+             # build one combined Q object: id must match, AND the user must belong to one of the two orgs
+             lookup = (
+@@ -2365,13 +2340,11 @@ class SuggestRefactorsView(APIView):
+                 {"error": "Symbol not found or you do not have permission."},
+                 status=status.HTTP_404_NOT_FOUND)
+ 
+-        # Get the OpenAI client
+-        client = OPENAI_CLIENT_INSTANCE # Or however you get your client
+-        if not client:
+-            return Response({"error": "AI service not configured."}, status=503)
+-
+-        # Use your existing streaming function
+-        stream = generate_refactor_stream(symbol, client)
++        # Create Gemini client
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        
++        # Use the refactoring streaming function from ai_services
++        stream = generate_refactor_stream(symbol, genai_client)
+         
+         # Return the generator as a streaming HTTP response
+         return StreamingHttpResponse(stream, content_type='text/plain; charset=utf-8')
+@@ -2501,11 +2474,14 @@ class StreamModuleReadmeView(LoginRequiredMixin, View):
+ 
+         module_path = request.GET.get('module_path', '').strip()
+         
+-        # This is the generator function from your ai_services
++        # Create Gemini client
++        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
++        
++        # This is the generator function from ai_services
+         stream_generator = generate_module_readme_stream(
+             repo_id=repo_id,
+             module_path=module_path,
+-            openai_client=OPENAI_CLIENT_INSTANCE # Assuming OPENAI_CLIENT is globally available
++            genai_client=genai_client
+         )
+ 
+         def event_stream():
+diff --git a/frontend/src/components/intelligence/FunctionDetailList.tsx b/frontend/src/components/intelligence/FunctionDetailList.tsx
+index 72e2903..b69dacc 100644
+--- a/frontend/src/components/intelligence/FunctionDetailList.tsx
++++ b/frontend/src/components/intelligence/FunctionDetailList.tsx
+@@ -65,7 +65,8 @@ export const FunctionDetailList: React.FC<FunctionDetailListProps> = ({ symbols,
+                 <ScrollArea className="h-full">
+                     <div className="p-2">
+                         {filteredSymbols.map(symbol => {
+-                            const link = activeRepository && symbol.unique_id ? `/repository/${activeRepository.id}/code?file=${symbol.unique_id.split(':')[0]}&symbol=${symbol.id}` : '#';
++                            // Correctly link to the Refactor Intelligence Page, matching the graph behavior
++                            const link = activeRepository ? `/repository/${activeRepository.id}/refactor/symbol/${symbol.id}` : '#';
+                             const complexityColorClass = getComplexityColorClass(symbol.cyclomatic_complexity);
+ 
+                             return (
+-- 
+2.40.0.windows.1
+
