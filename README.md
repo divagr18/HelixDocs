@@ -181,7 +181,8 @@ POSTGRES_PORT=5432
 GITHUB_CLIENT_ID=your-github-client-id
 GITHUB_CLIENT_SECRET=your-github-client-secret
 
-OPENAI_API_KEY=your-openai-api-key
+# Google Gemini API (Required for AI features)
+GOOGLE_API_KEY=your-google-api-key
 ```
 
 ### 3. Set Up GitHub OAuth

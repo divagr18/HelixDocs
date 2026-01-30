@@ -4,7 +4,8 @@ import json
 import re
 from typing import Generator,Optional
 from django.conf import settings
-from openai import OpenAI as OpenAIClient
+from google import genai 
+from google.genai import types
 from agno.tools import tool
 import logging
 from django.db.models import Q
@@ -14,7 +15,7 @@ from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeCla
 from pgvector.django import L2Distance
 def generate_class_summary_stream(
     code_class: CodeClass,
-    openai_client: OpenAIClient
+    genai_client: genai.Client
 ) -> Generator[str, None, None]:
     """
     Assembles a high-signal prompt and streams a summary for a CodeClass.
@@ -115,22 +116,21 @@ def generate_class_summary_stream(
 
     # 5. Call LLM and Stream Response
     try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful AI software architect that writes clear, concise technical documentation in Markdown."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=True,
-            temperature=0.4,
-            max_tokens=1000
-        )
         full_response_text = ""
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
+        response = genai_client.models.generate_content_stream(
+            model=settings.LLM_MODEL_ID,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.4,
+                max_output_tokens=5000,
+                system_instruction="You are a helpful AI software architect that writes clear, concise technical documentation in Markdown."
+            )
+        )
+        for chunk in response:
+            content = chunk.text
             if content:
                 full_response_text += content
-                yield content  # If you're streaming to client
+                yield content
 
         # After streaming is done, print the full content
         if full_response_text:
@@ -181,7 +181,7 @@ def generate_class_summary_stream(
 
 def generate_refactor_stream(
     symbol_obj: CodeSymbol,
-    openai_client: OpenAIClient
+    genai_client: genai.Client
 ) -> Generator[str, None, None]:
     """
     Assembles a high-signal prompt and streams refactoring suggestions for a CodeSymbol.
@@ -232,18 +232,17 @@ def generate_refactor_stream(
 
     # --- LLM Call ---
     try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini", # "gpt-4-turbo-preview" is recommended
-            messages=[
-                {"role": "system", "content": "You are a helpful AI code quality analyst that provides specific refactoring suggestions in Markdown format."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=True,
-            temperature=0.3, # Low temperature for factual, standard refactoring patterns
-            max_tokens=2048   # Allow for detailed suggestions with code
+        response = genai_client.models.generate_content_stream(
+            model=settings.LLM_MODEL_ID,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=2048,
+                system_instruction="You are a helpful AI code quality analyst that provides specific refactoring suggestions in Markdown format."
+            )
         )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
+        for chunk in response:
+            content = chunk.text
             if content:
                 yield content
     except Exception as e:
@@ -258,7 +257,7 @@ from django.conf import settings
 from agno.tools.postgres import PostgresTools
 
 from agno.agent import Agent, AgentKnowledge
-from agno.models.openai import OpenAIChat
+from agno.models.google import Gemini
 from agno.vectordb.pgvector import PgVector, SearchType
 
 def get_helix_knowledge_base() -> AgentKnowledge:
@@ -313,7 +312,7 @@ def get_helix_qa_agent(user_id: int, repo_id: int, file_path: Optional[str] = No
         repo_name = f"ID: {repo_id}"
     agent = Agent(
         name="Helix",
-        model=OpenAIChat(id="gpt-4.1-mini"),
+        model=Gemini(id="gemini-3-flash"),
         
         # 1. Provide the knowledge base for RAG
         
@@ -371,7 +370,7 @@ def handle_chat_query_stream(user_id: int,repo_id: int, query: str, file_path: s
 def generate_module_readme_stream(
     repo_id: int,
     module_path: str,
-    openai_client: OpenAIClient
+    genai_client: genai.Client
 ) -> Generator[str, None, None]:
     """
     Generates an in-depth, architectural README.md for a module by synthesizing
@@ -497,14 +496,13 @@ def generate_module_readme_stream(
     # --- Step 5: Stream to LLM and Save ---
     full_response_text = ""
     try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini", # Use a powerful model for this complex task
-            messages=[{"role": "user", "content": final_prompt}],
-            stream=True,
-            temperature=0.3,
+        response = genai_client.models.generate_content_stream(
+            model=settings.LLM_MODEL_ID,
+            contents=final_prompt,
+            config=types.GenerateContentConfig(temperature=0.3)
         )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
+        for chunk in response:
+            content = chunk.text
             if content:
                 full_response_text += content
                 yield content
@@ -522,7 +520,7 @@ def generate_module_readme_stream(
         print(f"MODULE_README_SERVICE: FATAL - LLM streaming failed: {e}")
         yield f"// Helix encountered an error while generating the README."
 
-def generate_refactoring_suggestions(symbol_obj: CodeSymbol, openai_client: OpenAIClient) -> list:
+def generate_refactoring_suggestions(symbol_obj: CodeSymbol, genai_client: genai.Client) -> list:
     """
     Uses an LLM to analyze a CodeSymbol and generate a list of
     structured refactoring suggestions in JSON format.
@@ -572,17 +570,17 @@ def generate_refactoring_suggestions(symbol_obj: CodeSymbol, openai_client: Open
     # --- LLM Call (Non-streaming, JSON mode) ---
     try:
         logger.info(f"AI_REFACTOR: Requesting refactoring suggestions for symbol {symbol_obj.id}.")
-        response = openai_client.chat.completions.create(
-            model="gpt-4.1-mini", # Or your preferred model that supports JSON mode
-            response_format={"type": "json_object"}, # Enable JSON mode
-            messages=[
-                {"role": "system", "content": "You are a helpful AI code quality analyst that provides refactoring suggestions in a structured JSON format."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
+        response = genai_client.models.generate_content(
+            model=settings.LLM_MODEL_ID,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+                system_instruction="You are a helpful AI code quality analyst that provides refactoring suggestions in a structured JSON format."
+            )
         )
         
-        content = response.choices[0].message.content
+        content = response.text
         if not content:
             logger.warning(f"AI_REFACTOR: LLM returned empty content for symbol {symbol_obj.id}.")
             return []

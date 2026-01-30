@@ -322,60 +322,65 @@ class Notification(models.Model):
     def __str__(self):
         return f"Notification for {self.user.username} ({self.get_notification_type_display()}): {self.message[:50]}..."
     
-class EmbeddingBatchJob(models.Model):
+class AiBatchJob(models.Model):
+    """
+    DEPRECATED: This model was used for tracking OpenAI batch jobs.
+    Since migrating to Gemini, we now use direct embedding generation
+    instead of batch jobs. This model is kept for historical data only.
+    """
     # Link to the repository this batch job is for
     repository = models.ForeignKey(
-        'Repository', # Use string reference if Repository is defined later in file or in another app's models.py
+        'Repository',
         on_delete=models.CASCADE, 
-        null=True, # Can be null if somehow a batch job isn't tied to a specific repo (less likely for us)
+        null=True,
         blank=True,
         related_name="embedding_batch_jobs"
     )
-    # OpenAI specific IDs
+    # Legacy batch job IDs
     batch_id = models.CharField(
         max_length=100, 
         unique=True,
-        null=True, # <--- ADD THIS
-        blank=True,  # OpenAI batch IDs are unique
-        db_index=True, # Good for querying by batch_id
-        help_text="OpenAI Batch API Job ID"
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy Batch API Job ID"
     )
     input_file_id = models.CharField(
         max_length=100, 
-        help_text="OpenAI File ID for the input batch .jsonl file"
+        help_text="Legacy File ID for the input batch .jsonl file"
     )
     output_file_id = models.CharField(
         max_length=100, 
         null=True, 
         blank=True,
-        help_text="OpenAI File ID for the output results .jsonl file"
+        help_text="Legacy File ID for the output results .jsonl file"
     )
     error_file_id = models.CharField(
         max_length=100, 
         null=True, 
         blank=True,
-        help_text="OpenAI File ID for the error details .jsonl file"
+        help_text="Legacy File ID for the error details .jsonl file"
     )
     class JobType(models.TextChoices):
         SYMBOL_EMBEDDING = 'SYMBOL_EMBEDDING', 'Symbol Embedding'
-        KNOWLEDGE_CHUNK_EMBEDDING = 'KNOWLEDGE_CHUNK_EMBEDDING', 'Knowledge Chunk Embedding'    
+        KNOWLEDGE_CHUNK_EMBEDDING = 'KNOWLEDGE_CHUNK_EMBEDDING', 'Knowledge Chunk Embedding'
+        DOCSTRING_GENERATION = 'DOCSTRING_GENERATION', 'Docstring Generation'
     job_type = models.CharField(
         max_length=30,
         choices=JobType.choices,
-        default=JobType.SYMBOL_EMBEDDING, # Or make it required on creation
+        default=JobType.SYMBOL_EMBEDDING,
         help_text="The type of content this batch job is for."
     )
     class JobStatus(models.TextChoices):
-        # Custom status before OpenAI Batch API is involved
-        PENDING_SUBMISSION = 'pending_submission', 'Pending Submission to OpenAI' 
-        # OpenAI Batch API Statuses (mirroring theirs)
+        # Legacy statuses from batch API workflow
+        PENDING_SUBMISSION = 'pending_submission', 'Pending Submission'
         VALIDATING = 'validating', 'Validating'
-        FAILED_VALIDATION = 'failed_validation', 'Failed Validation' # If input file fails validation
+        FAILED_VALIDATION = 'failed_validation', 'Failed Validation'
         IN_PROGRESS = 'in_progress', 'In Progress'
         FINALIZING = 'finalizing', 'Finalizing'
-        COMPLETED = 'completed', 'Completed by OpenAI'
-        FAILED = 'failed', 'Failed by OpenAI'
-        EXPIRED = 'expired', 'Expired by OpenAI'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+        EXPIRED = 'expired', 'Expired'
         CANCELLING = 'cancelling', 'Cancelling'
         CANCELLED = 'cancelled', 'Cancelled'
         RESULTS_PROCESSING = 'results_processing', 'Processing Results'
@@ -391,27 +396,27 @@ class EmbeddingBatchJob(models.Model):
     )
     
     # Timestamps
-    output_file_id = models.CharField(max_length=100, null=True, blank=True, help_text="The ID of the output file from a completed OpenAI job.")
+    output_file_id = models.CharField(max_length=100, null=True, blank=True, help_text="The ID of the output file from a completed batch job.")
     completed_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the job was confirmed as completed by our poller.")
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True) # Tracks last status update or poll
+    updated_at = models.DateTimeField(auto_now=True)
     submitted_to_openai_at = models.DateTimeField(null=True, blank=True)
-    openai_completed_at = models.DateTimeField(null=True, blank=True) # When OpenAI marks it complete
-    results_processed_at = models.DateTimeField(null=True, blank=True) # When we finish DB updates
+    openai_completed_at = models.DateTimeField(null=True, blank=True)
+    results_processed_at = models.DateTimeField(null=True, blank=True)
 
-    # Metadata from OpenAI or our own
-    openai_metadata = models.JSONField(null=True, blank=True, help_text="Metadata from OpenAI Batch object")
+    # Metadata
+    openai_metadata = models.JSONField(null=True, blank=True, help_text="Legacy metadata from batch API")
     custom_metadata = models.JSONField(null=True, blank=True, help_text="Custom metadata for this job")
     error_details = models.TextField(null=True, blank=True, help_text="Details of any processing errors")
 
     def __str__(self):
-        return f"Embedding Batch {self.batch_id or 'N/A'} for Repo {self.repository_id or 'N/A'} - Status: {self.get_status_display()}"
+        return f"AI Batch {self.batch_id or 'N/A'} for Repo {self.repository_id or 'N/A'} - Status: {self.get_status_display()}"
 
     class Meta:
-        db_table = 'embedding_batch_jobs'
+        db_table = 'ai_batch_jobs'
         ordering = ['-created_at']
-        verbose_name = "Embedding Batch Job"
-        verbose_name_plural = "Embedding Batch Jobs"
+        verbose_name = "AI Batch Job (Deprecated)"
+        verbose_name_plural = "AI Batch Jobs (Deprecated)"
 
 class Insight(models.Model):
     """

@@ -22,7 +22,7 @@ import datetime
 import tempfile
 from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
-from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
+from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,AiBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
 from allauth.socialaccount.models import SocialAccount
 import xml.etree.ElementTree as ET
@@ -30,14 +30,12 @@ from django.core.files.storage import default_storage
 from git import Repo, GitCommandError # <--- Import GitPython
 
 from .models import TestCoverageReport, FileCoverage, CodeFile, Repository
-OPENAI_EMBEDDING_BATCH_SIZE = 50
-OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
+from google import genai
+from google.genai import types
+
 # Define the path to our compiled Rust binary INSIDE the container
 REPO_CACHE_BASE_PATH = "/var/repos"
-from openai import OpenAI # Import the OpenAI library
 RUST_ENGINE_PATH = "/app/engine/helix-engine/target/release/helix-engine"
-OPENAI_CLIENT = OpenAI()
-OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 from django.core.cache import cache
 
 @app.task
@@ -61,6 +59,9 @@ def process_repository(repo_id, is_local=False, local_path=None):
         repo.status = Repository.Status.INDEXING
         repo.save(update_fields=['status'])
 
+        # Define user_who_added_repo early so it's available for both local and GitHub repos
+        user_who_added_repo = repo.added_by
+        
         # Handle local repositories differently
         if is_local or repo.repository_type == 'local':
             print(f"PROCESS_REPO_TASK: Processing local repository from path: {local_path}")
@@ -335,12 +336,11 @@ def process_repository(repo_id, is_local=False, local_path=None):
             print(f"PROCESS_REPO_TASK: Finished Pass 1. Processed {len(processed_unique_ids_from_rust)} symbols from Rust output.")
 
             # PASS 1.5: Generate Embeddings
-            if OPENAI_CLIENT: # Only submit if client is available
-                print(f"PROCESS_REPO_TASK: Dispatching asynchronous batch embedding job for repo {repo.id}...")
-                submit_embedding_batch_job_task.delay(repo_id=repo.id)
-
+            if settings.GOOGLE_API_KEY: # Only submit if Gemini API key is available
+                print(f"PROCESS_REPO_TASK: Dispatching embedding generation task for repo {repo.id}...")
+                generate_embeddings_direct_task.delay(repo_id=repo.id)
             else:
-                print("PROCESS_REPO_TASK: Skipping embedding job submission as OpenAI client is not available.")
+                print("PROCESS_REPO_TASK: Skipping embedding generation as Gemini API key is not available.")
             # --- END NEW ---
 
             # PASS 2: Link Dependencies
@@ -694,22 +694,26 @@ def get_source_for_symbol_in_task(symbol_obj: CodeSymbol) -> str | None:
         return "# Error: Source file not found in cache."
     return None # Should not be reached if logic is correct
 
-# --- Helper to call OpenAI for docstring (non-streaming) ---
-def call_openai_for_docstring(prompt: str, openai_client: OpenAI | None) -> str | None:
-    if not openai_client:
-        print("WARNING_HELPER: OpenAI client not provided to call_openai_for_docstring.")
-        return None
+# --- Helper to call Gemini for docstring generation ---
+def call_gemini_for_docstring(prompt: str) -> str | None:
+    """Generate a docstring using Gemini API"""
     try:
-        # Ensure you are using the correct API structure for your OpenAI library version
-        # For openai >= 1.0.0
-        completion = openai_client.chat.completions.create(
-            model="gpt-4.1-mini", # Cheaper/faster for batch, consider gpt-4-turbo-preview for quality
-            messages=[
-                {"role": "system", "content": "You are an expert Python programmer. Your task is to write a concise, professional, Google-style docstring for the given function. Do not include the function signature itself, only the docstring content inside triple quotes. Start with a one-line summary. Then, describe the arguments, and what the function returns. If context is provided about callers/callees, use it to make the docstring more informative."},
-                {"role": "user", "content": prompt}
-            ]
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        response = genai_client.models.generate_content(
+            model=settings.LLM_MODEL_ID,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(prompt)]
+                )
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.4,
+                max_output_tokens=800,
+                system_instruction="You are an expert Python programmer. Write a concise, professional, Google-style docstring for the given function. Do not include the function signature itself, only the docstring content. Start with a one-line summary, then describe arguments and return values."
+            )
         )
-        generated_content = completion.choices[0].message.content
+        generated_content = response.text
         
         # Clean the docstring (remove surrounding quotes if AI adds them, strip whitespace)
         if generated_content:
@@ -721,7 +725,7 @@ def call_openai_for_docstring(prompt: str, openai_client: OpenAI | None) -> str 
             return generated_content
         return None
     except Exception as e:
-        print(f"ERROR_HELPER: Error calling OpenAI for docstring: {e}")
+        print(f"ERROR_HELPER: Error calling Gemini for docstring: {e}")
         return None
     
 @app.task(bind=True, max_retries=2, default_retry_delay=180) # Fewer retries, longer delay for batch
@@ -757,10 +761,9 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
 
     print(f"Found {len(symbols_to_document)} symbols to document in {code_file.file_path} (ID: {code_file_id}).")
     
-    openai_client = OPENAI_CLIENT
-    
-    if not openai_client:
-        return {"status": "error", "message": "OpenAI client not available. Cannot generate documentation."}
+    # Check if Gemini API key is available
+    if not settings.GOOGLE_API_KEY:
+        return {"status": "error", "message": "Gemini API key not available. Cannot generate documentation."}
 
     successful_generations = 0
     failed_generations = 0
@@ -773,16 +776,14 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
             continue
         
         prompt = f"Generate a Python docstring for the following code snippet (file: {symbol.code_file.file_path if symbol.code_file else symbol.code_class.code_file.file_path}, symbol: {symbol.name}):\n\n```python\n{source_code}\n```"
-        # Add contextual prompting here later if desired (callers/callees)
         
         print(f"Generating doc for: {symbol.unique_id or symbol.name} (ID: {symbol.id})")
-        docstring_content = call_openai_for_docstring(prompt, openai_client)
+        docstring_content = call_gemini_for_docstring(prompt)
 
         if docstring_content:
             symbol.documentation = docstring_content
             symbol.documentation_hash = symbol.content_hash
-            symbol.documentation_status = CodeSymbol.DocStatus.FRESH # Or some other status
- # Mark as fresh
+            symbol.documentation_status = CodeSymbol.DocStatus.FRESH
             try:
                 symbol.save(update_fields = ['documentation', 'documentation_hash', 'documentation_status'])
                 print(f"Generated and saved doc for: {symbol.unique_id or symbol.name}")
@@ -794,7 +795,7 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
             print(f"Failed to generate doc for: {symbol.unique_id or symbol.name}")
             failed_generations += 1
         
-        time.sleep(0.1) # Basic rate limiting: 0.5 seconds between OpenAI calls
+        time.sleep(0.2) # Basic rate limiting between Gemini calls
     
     print(f"BATCH_DOCS_TASK: Triggering stats recalculation for repo {repo_id} after {successful_generations} successful generations.")
     calculate_documentation_coverage_task.delay(repo_id)
@@ -1012,10 +1013,9 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
         print(f"BATCH_DOC_GEN_TASK: ERROR - Creating/updating AsyncTaskStatus for {task_id}: {e}")
         # Allow task to proceed but status won't be fully tracked if task_status_obj is None
 
-    # Use the globally initialized OPENAI_CLIENT if available
-    current_openai_client = OPENAI_CLIENT 
-    if not current_openai_client:
-        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed)."
+    # Check if Gemini API key is available
+    if not settings.GOOGLE_API_KEY:
+        message = "Gemini API key not available (GOOGLE_API_KEY not set)."
         print(f"BATCH_DOC_GEN_TASK: {message}")
         if task_status_obj:
             task_status_obj.status = AsyncTaskStatus.TaskStatus.FAILURE
@@ -1087,7 +1087,7 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
             prompt = f"Generate a Python docstring for the following code snippet (file: {symbol_file_path_for_prompt}, symbol: {symbol.name}):\n\n```python\n{source_code}\n```"
             
             print(f"BATCH_DOC_GEN_TASK: Generating doc for: {symbol.unique_id or symbol.name} (ID: {symbol.id})")
-            docstring_content = call_openai_for_docstring(prompt, current_openai_client)
+            docstring_content = call_gemini_for_docstring(prompt)
 
             if docstring_content:
                 symbol.documentation = docstring_content
@@ -1595,141 +1595,92 @@ def calculate_documentation_coverage_task(repo_id):
     except Repository.DoesNotExist:
         print(f"COVERAGE_TASK: Repository with id={repo_id} not found.")
         return None
-@app.task(bind=True, max_retries=3, default_retry_delay=60) # Added retry for robustness
-def submit_embedding_batch_job_task(self, repo_id: int):
-    task_id = self.request.id # Celery task ID of this submission task
-    print(f"EMBED_BATCH_SUBMIT_TASK: Started (ID: {task_id}) for repo_id {repo_id}")
-
-    if not OPENAI_CLIENT:
-        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed). Cannot submit embedding batch."
-        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
-        # Potentially create an EmbeddingBatchJob record with a FAILED_SUBMISSION status
-        # For now, we just log and exit.
-        return {"status": "error", "message": message}
-
+@app.task
+def generate_embeddings_direct_task(repo_id: int):
+    """
+    Directly generates embeddings for all symbols in the repository
+    using Gemini's batch_embed_contents API.
+    Replaces the OpenAI batch embedding workflow.
+    """
+    print(f"EMBED_TASK: Starting direct embedding generation for repo_id {repo_id}")
+    
     try:
         repo = Repository.objects.get(id=repo_id)
     except Repository.DoesNotExist:
-        print(f"EMBED_BATCH_SUBMIT_TASK: Repository with ID {repo_id} not found.")
+        print(f"EMBED_TASK: Repository {repo_id} not found.")
         return {"status": "error", "message": f"Repository {repo_id} not found."}
 
+    # Get all symbols that need embeddings
     symbols_to_embed = CodeSymbol.objects.filter(
-        (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)),
-        embedding__isnull=True # Embed only if embedding is currently null
-    ).only('id', 'name', 'documentation', 'unique_id') # Fetch only needed fields
+        Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo),
+        embedding__isnull=True
+    ).only('id', 'name', 'documentation')
 
     if not symbols_to_embed.exists():
-        message = f"No symbols requiring embedding found for repository {repo.full_name}."
-        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
-        return {"status": "success", "message": message, "batch_id": None}
+        print(f"EMBED_TASK: No symbols requiring embedding for repository {repo.full_name}.")
+        return {"status": "success", "message": "No symbols needed embedding."}
 
-    print(f"EMBED_BATCH_SUBMIT_TASK: Preparing batch file for {symbols_to_embed.count()} symbols from repo {repo.full_name}.")
-
-    batch_requests_for_jsonl = []
-    # Keep track of symbol pks for which requests are created, to update them later
-    # if we decide to mark them as "embedding_job_submitted"
-    symbol_pks_in_batch = [] 
-
+    print(f"EMBED_TASK: Processing {symbols_to_embed.count()} symbols for repo {repo.full_name}.")
+    
+    # Initialize Gemini client
+    genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+    
+    # Process in batches of 100 (Gemini can handle larger batches than OpenAI)
+    BATCH_SIZE = 100
+    symbol_batch_texts = []
+    symbol_batch_objs = []
+    total_processed = 0
+    
     for symbol in symbols_to_embed:
-        # custom_id must be unique within the batch file, max 64 chars.
-        # Using `symbol-{pk}` is a good pattern.
-        custom_id = f"symbol-{symbol.id}" 
-        symbol_pks_in_batch.append(symbol.id)
-
+        # Combine name and documentation for richer embeddings
         text_to_embed = symbol.name
         if symbol.documentation:
-            # OpenAI recommends replacing newlines with spaces for their embedding models.
             doc_cleaned = symbol.documentation.replace("\n", " ").strip()
-            if doc_cleaned: # Only append if there's actual content after cleaning
-                text_to_embed += f"\n\n{doc_cleaned}" # Use a clear separator
-
-        batch_requests_for_jsonl.append({
-            "custom_id": custom_id,
-            "method": "POST",
-            "url": "/v1/embeddings", # Correct endpoint for embeddings
-            "body": {
-                "model": OPENAI_EMBEDDING_MODEL, # Your configured embedding model
-                "input": text_to_embed
-                # "encoding_format": "float", # Default is float, can also be "base64"
-                # "dimensions": 1536 # Optional: if using a model that supports other dimensions
-            }
-        })
+            if doc_cleaned:
+                text_to_embed += f" {doc_cleaned}"
         
-        # Adhere to OpenAI's per-batch request limit
-        if len(batch_requests_for_jsonl) >= OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS:
-            print(f"EMBED_BATCH_SUBMIT_TASK: Reached max requests ({OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS}) "
-                  f"for a single batch file. Processing this batch and will skip remaining symbols for now.")
-            break
-            # A more advanced implementation would create multiple batch jobs.
-
-    if not batch_requests_for_jsonl:
-        message = f"No valid embedding requests generated for repository {repo.full_name}."
-        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
-        return {"status": "success", "message": message, "batch_id": None}
-
-    # Create an initial EmbeddingBatchJob record to track this attempt
-    # We'll update it with OpenAI IDs once the submission is successful
-    job_record = EmbeddingBatchJob.objects.create(
-        repository=repo,
-        status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
-        custom_metadata={"celery_task_id": task_id, "symbol_count": len(batch_requests_for_jsonl)}
-    )
-
-    batch_input_file_path = None
-    job_record = None # Initialize job_record as None
-    try:
-        # 1. Prepare and upload the file to OpenAI first.
-        with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
-            for request_data in batch_requests_for_jsonl:
-                tmp_file.write(json.dumps(request_data) + "\n")
-            batch_input_file_path = tmp_file.name
+        symbol_batch_texts.append(text_to_embed)
+        symbol_batch_objs.append(symbol)
         
-        with open(batch_input_file_path, "rb") as f_for_upload:
-            uploaded_file = OPENAI_CLIENT.files.create(file=f_for_upload, purpose="batch")
-
-        job_record = EmbeddingBatchJob(
-            repository=repo,
-            job_type=EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING,
-            status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
-            input_file_id=uploaded_file.id, # We already have this
-        )
-
-        job_record.save() # Now it has an ID.
-
-        # 3. Now, create the batch job on OpenAI, passing our database ID in the metadata.
-        openai_batch = OPENAI_CLIENT.batches.create(
-            input_file_id=uploaded_file.id,
-            endpoint="/v1/embeddings",
-            completion_window="24h",
-            metadata={"helix_job_id": str(job_record.id), "repo_id": str(repo.id)}
-        )
-        
-        # 4. NOW that we have the real batch_id, update our record and save again.
-        job_record.batch_id = openai_batch.id
-        job_record.status = openai_batch.status
-        job_record.submitted_to_openai_at = timezone.now()
-        job_record.openai_metadata = openai_batch.to_dict()
-        job_record.save()
-        
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: OpenAI Batch job created. Batch ID: {openai_batch.id} for Job ID {job_record.id}")
-        
-        return {
-            "status": "success", "message": "Batch job submitted.",
-            "helix_job_id": job_record.id, "openai_batch_id": openai_batch.id
-        }
-
-    except Exception as e:
-        error_message = f"Error during batch creation: {str(e)}"
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {error_message}")
-        # If the job record was created, mark it as failed.
-        if job_record and job_record.pk:
-            job_record.status = EmbeddingBatchJob.JobStatus.FAILED
-            job_record.error_details = error_message
-            job_record.save()
-        return {"status": "error", "message": error_message}
-    finally:
-        if batch_input_file_path and os.path.exists(batch_input_file_path):
-            os.remove(batch_input_file_path)
+        # When batch is full, process it
+        if len(symbol_batch_texts) >= BATCH_SIZE:
+            try:
+                response = genai_client.models.batch_embed_contents(
+                    model=settings.EMBEDDING_MODEL_ID,
+                    contents=symbol_batch_texts
+                )
+                
+                # Update symbols with their embeddings
+                for i, embedding in enumerate(response.embeddings):
+                    symbol_batch_objs[i].embedding = embedding.values
+                
+                CodeSymbol.objects.bulk_update(symbol_batch_objs, ['embedding'], batch_size=100)
+                total_processed += len(symbol_batch_objs)
+                print(f"EMBED_TASK: Processed {total_processed}/{symbols_to_embed.count()} symbols.")
+                
+            except Exception as e:
+                print(f"EMBED_TASK: Error processing batch: {e}")
+            
+            # Reset batch
+            symbol_batch_texts = []
+            symbol_batch_objs = []
+    
+    # Process remaining symbols
+    if symbol_batch_texts:
+        try:
+            response = genai_client.models.batch_embed_contents(
+                model=settings.EMBEDDING_MODEL_ID,
+                contents=symbol_batch_texts
+            )
+            for i, embedding in enumerate(response.embeddings):
+                symbol_batch_objs[i].embedding = embedding.values
+            CodeSymbol.objects.bulk_update(symbol_batch_objs, ['embedding'], batch_size=100)
+            total_processed += len(symbol_batch_objs)
+            print(f"EMBED_TASK: Completed. Processed {total_processed} symbols total.")
+        except Exception as e:
+            print(f"EMBED_TASK: Error processing final batch: {e}")
+    
+    return {"status": "success", "message": f"Generated embeddings for {total_processed} symbols."}
             
 @app.task
 def generate_insights_on_change_task(repo_id: int, commit_hash: str = None, diff_report: dict = None):
@@ -1795,157 +1746,85 @@ def generate_insights_on_change_task(repo_id: int, commit_hash: str = None, diff
     else:
         print(f"INSIGHTS_TASK: No structural changes found to generate insights for repo {repo_id}.")
 
-@app.task(bind=True)
-def submit_knowledge_chunk_embedding_batch_task(self, repo_id: int):
+@app.task
+def generate_knowledge_embeddings_direct_task(repo_id: int):
     """
-    Creates and submits a new batch job to OpenAI for embedding KnowledgeChunk records.
-
-    This task queries for KnowledgeChunk objects that do not yet have an embedding,
-    formats them into a .jsonl file, uploads the file, and creates the batch job.
-    It is designed to be triggered after `index_repository_knowledge_task` has
-    created the content chunks.
+    Directly generates embeddings for all KnowledgeChunks in the repository
+    using Gemini's batch_embed_contents API.
+    Replaces the OpenAI batch embedding workflow for knowledge chunks.
     """
-    task_id = self.request.id
-    print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Started (ID: {task_id}) for repo_id {repo_id}")
-
-    # 1. Pre-flight check for OpenAI Client
-    if not OPENAI_CLIENT:
-        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed). Cannot submit embedding batch."
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {message}")
-        # We cannot proceed, so we exit.
-        return {"status": "error", "message": message}
-
-    # 2. Fetch Repository
+    print(f"KNOWLEDGE_EMBED_TASK: Starting direct embedding generation for repo_id {repo_id}")
+    
     try:
         repo = Repository.objects.get(id=repo_id)
     except Repository.DoesNotExist:
-        message = f"Repository with ID {repo_id} not found."
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {message}")
-        return {"status": "error", "message": message}
+        print(f"KNOWLEDGE_EMBED_TASK: Repository {repo_id} not found.")
+        return {"status": "error", "message": f"Repository {repo_id} not found."}
 
-    # 3. Query for KnowledgeChunks that need embedding
+    # Get all knowledge chunks that need embeddings
     chunks_to_embed = KnowledgeChunk.objects.filter(
         repository=repo,
-        embedding__isnull=True  # The primary condition for selecting chunks
-    ).only('id', 'content')     # Fetch only the fields necessary for the batch file
+        embedding__isnull=True
+    ).only('id', 'content')
 
     if not chunks_to_embed.exists():
-        message = f"No new knowledge chunks requiring embedding found for repository {repo.full_name}."
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {message}")
-        return {"status": "success", "message": message, "batch_id": None}
+        print(f"KNOWLEDGE_EMBED_TASK: No knowledge chunks requiring embedding for repository {repo.full_name}.")
+        return {"status": "success", "message": "No knowledge chunks needed embedding."}
 
-    print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Preparing batch file for {chunks_to_embed.count()} knowledge chunks from repo '{repo.full_name}'.")
-
-    # 4. Prepare the requests for the JSONL file
-    batch_requests_for_jsonl = []
-    chunk_pks_in_batch = []
-
-    for chunk in chunks_to_embed:
-        # The custom_id must be unique within the batch file and max 64 chars.
-        # `chunk-{pk}` is a robust pattern.
-        custom_id = f"chunk-{chunk.id}"
-        chunk_pks_in_batch.append(chunk.id)
-
-        # The content from the chunk is already formatted with context.
-        text_to_embed = chunk.content
-
-        batch_requests_for_jsonl.append({
-            "custom_id": custom_id,
-            "method": "POST",
-            "url": "/v1/embeddings",
-            "body": {
-                "model": OPENAI_EMBEDDING_MODEL,
-                "input": text_to_embed
-            }
-        })
-        
-        # Adhere to OpenAI's documented limit per batch file.
-        if len(batch_requests_for_jsonl) >= OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS:
-            print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Reached max requests ({OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS}). "
-                  f"Submitting a partial batch. Another run will be needed for remaining chunks.")
-            break
-
-    if not batch_requests_for_jsonl:
-        message = f"No valid embedding requests were generated for repository {repo.full_name}."
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {message}")
-        return {"status": "success", "message": message, "batch_id": None}
-
-    # 5. Create our internal job record to track this submission
-    job_record = EmbeddingBatchJob.objects.create(
-        repository=repo,
-        job_type=EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING,
-        status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
-        custom_metadata={"celery_task_id": task_id, "chunk_count": len(batch_requests_for_jsonl)}
-    )
-
-    batch_input_file_path = None
-    try:
-        # 6. Create the temporary .jsonl file
-        with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
-            for request_data in batch_requests_for_jsonl:
-                tmp_file.write(json.dumps(request_data) + "\n")
-            batch_input_file_path = tmp_file.name
-        
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Batch input file created at {batch_input_file_path} for Job ID {job_record.id}")
-
-        # 7. Upload the file to OpenAI
-        with open(batch_input_file_path, "rb") as f_for_upload:
-            uploaded_file = OPENAI_CLIENT.files.create(
-                file=f_for_upload,
-                purpose="batch"
-            )
-        
-        job_record.input_file_id = uploaded_file.id
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Batch input file uploaded. OpenAI File ID: {uploaded_file.id}")
-
-        # 8. Create the batch job using the uploaded file
-        openai_batch = OPENAI_CLIENT.batches.create(
-            input_file_id=uploaded_file.id,
-            endpoint="/v1/embeddings",
-            completion_window="24h",
-            metadata={
-                "helix_cme_job_id": str(job_record.id),
-                "repository_id": str(repo.id),
-                "description": f"Helix CME: Knowledge Chunk embedding for {repo.full_name}"
-            }
-        )
-        
-        # 9. Update our internal record with the crucial IDs and status from OpenAI
-        job_record.batch_id = openai_batch.id
-        job_record.status = openai_batch.status # This will likely be 'validating'
-        job_record.submitted_to_openai_at = timezone.now()
-        job_record.openai_metadata = openai_batch.to_dict()
-        job_record.save()
-        
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: OpenAI Batch job created successfully. OpenAI Batch ID: {openai_batch.id}, "
-              f"Status: {openai_batch.status} for our Job ID {job_record.id}")
-        
-        return {
-            "status": "success", 
-            "message": "Knowledge chunk embedding batch job successfully submitted to OpenAI.",
-            "helix_job_id": job_record.id,
-            "openai_batch_id": openai_batch.id
-        }
-
-    except Exception as e:
-        error_message = f"Error during OpenAI batch submission for Job ID {job_record.id}: {str(e)}"
-        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {error_message}")
-        
-        # Update our job record to reflect the failure
-        job_record.status = EmbeddingBatchJob.JobStatus.FAILED_VALIDATION # Or a more generic FAILED
-        job_record.error_details = error_message
-        job_record.save()
-        
-        # Optionally re-raise to have Celery retry the task, though for submission errors,
-        # it might be better to fix the issue and re-trigger manually.
-        # self.retry(exc=e) 
-        return {"status": "error", "message": error_message, "helix_job_id": job_record.id}
+    print(f"KNOWLEDGE_EMBED_TASK: Processing {chunks_to_embed.count()} knowledge chunks for repo {repo.full_name}.")
     
-    finally:
-        # 10. Clean up the temporary file from the local filesystem
-        if batch_input_file_path and os.path.exists(batch_input_file_path):
-            os.remove(batch_input_file_path)
-            print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Cleaned up temporary file {batch_input_file_path}")
+    # Initialize Gemini client
+    genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+    
+    # Process in batches of 100
+    BATCH_SIZE = 100
+    chunk_batch_texts = []
+    chunk_batch_objs = []
+    total_processed = 0
+    
+    for chunk in chunks_to_embed:
+        chunk_batch_texts.append(chunk.content)
+        chunk_batch_objs.append(chunk)
+        
+        # When batch is full, process it
+        if len(chunk_batch_texts) >= BATCH_SIZE:
+            try:
+                response = genai_client.models.batch_embed_contents(
+                    model=settings.EMBEDDING_MODEL_ID,
+                    contents=chunk_batch_texts
+                )
+                
+                # Update chunks with their embeddings
+                for i, embedding in enumerate(response.embeddings):
+                    chunk_batch_objs[i].embedding = embedding.values
+                
+                KnowledgeChunk.objects.bulk_update(chunk_batch_objs, ['embedding'], batch_size=100)
+                total_processed += len(chunk_batch_objs)
+                print(f"KNOWLEDGE_EMBED_TASK: Processed {total_processed}/{chunks_to_embed.count()} chunks.")
+                
+            except Exception as e:
+                print(f"KNOWLEDGE_EMBED_TASK: Error processing batch: {e}")
+            
+            # Reset batch
+            chunk_batch_texts = []
+            chunk_batch_objs = []
+    
+    # Process remaining chunks
+    if chunk_batch_texts:
+        try:
+            response = genai_client.models.batch_embed_contents(
+                model=settings.EMBEDDING_MODEL_ID,
+                contents=chunk_batch_texts
+            )
+            for i, embedding in enumerate(response.embeddings):
+                chunk_batch_objs[i].embedding = embedding.values
+            KnowledgeChunk.objects.bulk_update(chunk_batch_objs, ['embedding'], batch_size=100)
+            total_processed += len(chunk_batch_objs)
+            print(f"KNOWLEDGE_EMBED_TASK: Completed. Processed {total_processed} chunks total.")
+        except Exception as e:
+            print(f"KNOWLEDGE_EMBED_TASK: Error processing final batch: {e}")
+    
+    return {"status": "success", "message": f"Generated embeddings for {total_processed} knowledge chunks."}
 @app.task
 def index_repository_knowledge_task(repo_id: int):
     """
@@ -2006,156 +1885,21 @@ def index_repository_knowledge_task(repo_id: int):
         KnowledgeChunk.objects.bulk_create(chunks_to_create, batch_size=500)
         print(f"KNOWLEDGE_INDEX_TASK: Created {len(chunks_to_create)} knowledge chunks (without embeddings).")
 
-        # --- NEW: Dispatch the batch submission task ---
-        print(f"KNOWLEDGE_INDEX_TASK: Dispatching batch job submission task for repo {repo.id}.")
-        submit_knowledge_chunk_embedding_batch_task.delay(repo_id=repo.id)
+        # --- NEW: Dispatch the embedding generation task ---
+        print(f"KNOWLEDGE_INDEX_TASK: Dispatching embedding generation task for repo {repo.id}.")
+        generate_knowledge_embeddings_direct_task.delay(repo_id=repo.id)
         # --- END NEW ---
 
     except Exception as e:
         print(f"KNOWLEDGE_INDEX_TASK: FATAL - DB error during bulk_create: {e}")
 
-@app.task(bind=True)
-def poll_and_process_completed_batches_task(self):
-    """
-    Periodically polls for in-progress EmbeddingBatchJob records, checks their
-    status with OpenAI, and processes completed jobs by updating the correct
-    model (KnowledgeChunk or CodeSymbol) based on the job_type.
-    """
-    task_id = self.request.id
-    print(f"BATCH_POLL_TASK: Started (ID: {task_id})")
+# NOTE: poll_and_process_completed_batches_task has been removed
+# We now use direct Gemini embedding generation instead of OpenAI's batch API
+# so no polling is needed. Embeddings are generated synchronously via:
+# - generate_embeddings_direct_task (for code symbols)
+# - generate_knowledge_embeddings_direct_task (for knowledge chunks)
 
-    if not OPENAI_CLIENT:
-        print("BATCH_POLL_TASK: Aborting, OpenAI client not available.")
-        return
 
-    # 1. Find our jobs that are currently in-flight with OpenAI.
-    in_progress_jobs = EmbeddingBatchJob.objects.filter(
-        status__in=['validating', 'in_progress', 'finalizing']
-    ).select_related('repository')
-
-    if not in_progress_jobs.exists():
-        print("BATCH_POLL_TASK: No in-progress batch jobs found to poll.")
-        return
-
-    print(f"BATCH_POLL_TASK: Found {in_progress_jobs.count()} in-progress jobs to check.")
-
-    for job in in_progress_jobs:
-        try:
-            print(f"BATCH_POLL_TASK: Checking status for Job ID {job.id} (OpenAI Batch ID: {job.batch_id})")
-            
-            # 2. Retrieve the latest status of the batch job from OpenAI.
-            openai_batch = OPENAI_CLIENT.batches.retrieve(job.batch_id)
-            
-            # Update our local record with the latest status and metadata.
-            job.status = openai_batch.status
-            job.openai_metadata = openai_batch.to_dict()
-            job.save(update_fields=['status', 'openai_metadata'])
-
-            # 3. Check if the job is completed and ready for processing.
-            if openai_batch.status == 'completed':
-                print(f"BATCH_POLL_TASK: Job {job.id} (Type: {job.job_type}) is COMPLETED. Processing results...")
-                
-                output_file_id = openai_batch.output_file_id
-                if not output_file_id:
-                    raise Exception("Batch job completed but no output_file_id was provided by OpenAI.")
-
-                # 4. Download the output file content from OpenAI.
-                output_file_content_response = OPENAI_CLIENT.files.content(output_file_id)
-                output_data = output_file_content_response.read().decode('utf-8')
-                
-                output_lines = output_data.strip().split('\n')
-                print(f"BATCH_POLL_TASK: Downloaded output file for job {job.id} with {len(output_lines)} lines.")
-                
-                updates_to_perform = {} # {pk: embedding_vector}
-
-                for i, line in enumerate(output_lines):
-                    if not line.strip(): continue
-                    
-                    try:
-                        result_item = json.loads(line)
-                        custom_id = result_item.get('custom_id')
-
-                        if not custom_id: continue
-                        if result_item.get('error'): continue
-
-                        embedding = result_item.get('response', {}).get('body', {}).get('data', [{}])[0].get('embedding')
-                        if not isinstance(embedding, list): continue
-                        
-                        # --- REFACTORED LOGIC: Check job_type to parse custom_id correctly ---
-                        pk = None
-                        if job.job_type == EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING and custom_id.startswith('chunk-'):
-                            pk = int(custom_id.split('-')[1])
-                        elif job.job_type == EmbeddingBatchJob.JobType.SYMBOL_EMBEDDING and custom_id.startswith('symbol-'):
-                            pk = int(custom_id.split('-')[1])
-                        
-                        if pk:
-                            updates_to_perform[pk] = embedding
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SUCCESS - Staged update for {job.job_type} ID {pk}.")
-                        else:
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - custom_id '{custom_id}' has invalid format for job type '{job.job_type}'.")
-                        # --- END REFACTORED LOGIC ---
-
-                    except (json.JSONDecodeError, IndexError, KeyError, ValueError) as e:
-                        print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] FATAL PARSE ERROR - {e}")
-                        continue
-
-                if not updates_to_perform:
-                    error_msg = "Job completed but no successful updates could be parsed. Check output file."
-                    print(f"BATCH_POLL_TASK: [Job {job.id}] {error_msg}")
-                    job.status = EmbeddingBatchJob.JobStatus.RESULTS_FAILED_TO_PROCESS
-                    job.error_details = error_msg
-                    job.completed_at = timezone.now()
-                    job.save()
-                    continue
-
-                # --- REFACTORED LOGIC: Update the correct database model based on job_type ---
-                with transaction.atomic():
-                    if job.job_type == EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING:
-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} KnowledgeChunk records.")
-                        items_to_update = list(KnowledgeChunk.objects.filter(id__in=updates_to_perform.keys()))
-                        for item in items_to_update:
-                            item.embedding = updates_to_perform.get(item.id)
-                        KnowledgeChunk.objects.bulk_update(items_to_update, ['embedding'], batch_size=500)
-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(items_to_update)} KnowledgeChunk records.")
-
-                    elif job.job_type == EmbeddingBatchJob.JobType.SYMBOL_EMBEDDING:
-                        # PREREQUISITE: Your CodeSymbol model must have an 'embedding' VectorField.
-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} CodeSymbol records.")
-                        items_to_update = list(CodeSymbol.objects.filter(id__in=updates_to_perform.keys()))
-                        for item in items_to_update:
-                            item.embedding = updates_to_perform.get(item.id)
-                        CodeSymbol.objects.bulk_update(items_to_update, ['embedding'], batch_size=500)
-                        print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(items_to_update)} CodeSymbol records.")
-                # --- END REFACTORED LOGIC ---
-
-                # 7. Finalize our internal job record.
-                job.output_file_id = output_file_id
-                job.completed_at = timezone.now()
-                job.status = EmbeddingBatchJob.JobStatus.RESULTS_PROCESSED
-                job.save(update_fields=['output_file_id', 'completed_at', 'status'])
-
-            elif openai_batch.status in ['failed', 'expired', 'cancelled']:
-                # Handle terminal failure states.
-                print(f"BATCH_POLL_TASK: Job {job.id} has failed or expired. Status: {openai_batch.status}")
-                job.error_details = json.dumps(openai_batch.errors) if openai_batch.errors else f"Job terminated with status: {openai_batch.status}"
-                job.completed_at = timezone.now()
-                job.save(update_fields=['error_details', 'completed_at'])
-            
-            else:
-                # Status is still in-flight.
-                print(f"BATCH_POLL_TASK: Job {job.id} is still in progress. Status: {openai_batch.status}")
-
-        except Exception as e:
-            error_message = f"An unexpected error occurred while processing job {job.id}: {str(e)}"
-            print(f"BATCH_POLL_TASK: ERROR - {error_message}")
-            try:
-                job.status = EmbeddingBatchJob.JobStatus.FAILED
-                job.error_details = error_message
-                job.save()
-            except Exception as save_err:
-                print(f"BATCH_POLL_TASK: CRITICAL - Could not save failure status for job {job.id}: {save_err}")
-            
-            continue # Continue to the next job in the loop
 @app.task(bind=True)
 def create_pr_with_changes_task(
     self,
@@ -2351,8 +2095,8 @@ def sync_knowledge_index_task(repo_id: int):
     KnowledgeChunk.objects.bulk_create(chunks_to_create, batch_size=500)
     print(f"KNOWLEDGE_SYNC_TASK: Created {len(chunks_to_create)} knowledge chunk records.")
 
-    # Dispatch the existing batch embedding task to finish the job
-    submit_knowledge_chunk_embedding_batch_task.delay(repo_id=repo.id)
+    # Dispatch the embedding generation task to finish the job
+    generate_knowledge_embeddings_direct_task.delay(repo_id=repo.id)
     print(f"KNOWLEDGE_SYNC_TASK: Dispatched embedding task for repo {repo.id}.")
 
 @app.task
@@ -2363,15 +2107,10 @@ def generate_and_save_module_readme_task(previous_task_result, repo_id: int, mod
     """
     print(f"README_GENERATION_TASK: Starting for repo {repo_id}, path '{module_path}'.")
 
-    client = OPENAI_CLIENT
-    if not client:
-        raise Exception("OpenAI client not available in README generation task.")
-
     # Call the stream generator, which now handles saving internally.
     readme_stream = generate_module_readme_stream(
         repo_id=repo_id,
-        module_path=module_path,
-        openai_client=client
+        module_path=module_path
     )
     
     # We must consume the stream for the generation and saving to happen.

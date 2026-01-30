@@ -65,7 +65,8 @@ export const FunctionDetailList: React.FC<FunctionDetailListProps> = ({ symbols,
                 <ScrollArea className="h-full">
                     <div className="p-2">
                         {filteredSymbols.map(symbol => {
-                            const link = activeRepository && symbol.unique_id ? `/repository/${activeRepository.id}/code?file=${symbol.unique_id.split(':')[0]}&symbol=${symbol.id}` : '#';
+                            // Correctly link to the Refactor Intelligence Page, matching the graph behavior
+                            const link = activeRepository ? `/repository/${activeRepository.id}/refactor/symbol/${symbol.id}` : '#';
                             const complexityColorClass = getComplexityColorClass(symbol.cyclomatic_complexity);
 
                             return (

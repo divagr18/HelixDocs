@@ -223,6 +223,12 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
 # Additional allauth settings for proper OAuth flow
 ACCOUNT_AUTHENTICATION_METHOD = 'email'
 ACCOUNT_EMAIL_REQUIRED = True
+# Validated Google GenAI Settings
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+LLM_MODEL_ID = "gemini-3-flash-preview"
+GEMINI_MODEL_ID = LLM_MODEL_ID  # Alias for consistency
+EMBEDDING_MODEL_ID = "gemini-embedding-001"
+
 ACCOUNT_USERNAME_REQUIRED = False
 SOCIALACCOUNT_QUERY_EMAIL = True
 SOCIALACCOUNT_EMAIL_REQUIRED = True

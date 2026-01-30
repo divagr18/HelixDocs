@@ -45,7 +45,7 @@ class OrganizationMemberAdmin(admin.ModelAdmin):
     search_fields = ('user__username', 'organization__name')
     raw_id_fields = ('user', 'organization')
 
-from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,EmbeddingBatchJob,Insight
+from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,AiBatchJob,Insight
 
 admin.site.register(CodeFile)
 admin.site.register(CodeClass) # Register the new Class model
@@ -79,7 +79,7 @@ class NotificationAdmin(admin.ModelAdmin):
         queryset.update(is_read=False)
     mark_as_unread.short_description = "Mark selected notifications as unread"
 
-@admin.register(EmbeddingBatchJob)
+@admin.register(AiBatchJob)
 class EmbeddingBatchJobAdmin(admin.ModelAdmin):
     list_display = (
         'id', 

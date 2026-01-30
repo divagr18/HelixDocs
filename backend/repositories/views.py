@@ -2,6 +2,7 @@
 import os,shutil
 import subprocess
 from django.db.models import Q,F  # <--- ADD THIS IMPORT
+from django.conf import settings
 from rest_framework import generics, permissions
 from django.core.files.storage import default_storage
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -23,13 +24,13 @@ import requests,re
 from django.http import Http404, HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
 from django.utils import timezone
-from openai import OpenAI
 import tempfile,hashlib
 from rest_framework import status  # if using Django REST Framework
 from .tasks import create_docs_pr_for_file_task
 from .tasks import batch_generate_docstrings_for_files_task, create_pr_for_multiple_files_task # We'll define these tasks next
 from .diagram_utils import generate_react_flow_data
-from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
+from google import genai
+from google.genai import types
 from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
 from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightSerializer # We can reuse this for results
 import os
@@ -41,8 +42,6 @@ from django.contrib.auth import get_user_model
 User = get_user_model() # <--- 2. Call the function to get the active User model
 
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
-OPENAI_CLIENT_INSTANCE = OpenAIClient()
-OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
 from django.db import connection  # For debugging SQL queries
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -284,29 +283,27 @@ class FileContentView(APIView):
             # We could trigger a re-index here in a real product.
             return Response({"error": "File not found in cache."}, status=404)
             
-def openai_stream_generator(prompt: str, openai_client_instance: OpenAIClient | None):
-    if not openai_client_instance:
-        print("STREAM_GEN: OpenAI client not available in generator.")
-        yield "// Error: OpenAI service not configured for streaming.\n"
+def gemini_stream_generator(prompt: str, genai_client_instance: genai.Client | None):
+    if not genai_client_instance:
+        print("STREAM_GEN: Gemini client not available in generator.")
+        yield "// Error: AI service not configured for streaming.\n"
         return
-    
-    # print(f"DEBUG_AI_PROMPT (Contextual Stream - in generator):\n{prompt}\n--------------------") # Moved from view
 
     try:
-        stream = openai_client_instance.chat.completions.create(
-            model="gpt-4o-mini", # Fixed model name
-            messages=[
-                {"role": "system", "content": "You are a helpful AI programming assistant specialized in writing Python docstrings."},
-                {"role": "user", "content": prompt} # The full prompt is now constructed in the view
-            ],
-            stream=True,
+        # Simplify the call to use string directly, which is supported and robust
+        response = genai_client_instance.models.generate_content_stream(
+            model=settings.LLM_MODEL_ID,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction="You are a helpful AI programming assistant specialized in writing Python docstrings."
+            )
         )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
+        for chunk in response:
+            content = chunk.text
             if content:
                 yield content
     except Exception as e:
-        error_message = f"// Error during OpenAI stream: {str(e)}\n"
+        error_message = f"// Error during Gemini stream: {str(e)}\n"
         print(f"STREAM_GEN: {error_message}")
         yield error_message
 def get_source_for_symbol_from_view(symbol_obj: CodeSymbol) -> str | None:
@@ -351,87 +348,87 @@ class GenerateDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        function_id = kwargs.get('function_id') # Assuming URL uses 'function_id'
-        print(f"VIEW_GEN_DOC: Request for symbol_id={function_id}, user={request.user.username}")
-
-        # --- Initialize OpenAI Client ---
-        openai_client = OPENAI_CLIENT_INSTANCE
-        
-        # If client init fails critically, it's better to stop and inform.
-        if not openai_client:
-             # Return a non-streaming error response
-            return Response({"error": "OpenAI service not available or not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
         try:
+            function_id = kwargs.get('function_id')
+            print(f"VIEW_GEN_DOC: Request for symbol_id={function_id}, user={request.user.username}")
+
+            if not settings.GOOGLE_API_KEY:
+                return Response({"error": "Google API Key is not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+            # --- Initialize Gemini Client ---
+            try:
+                genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+            except Exception as e:
+                print(f"VIEW_GEN_DOC: Failed to initialize Gemini client: {e}")
+                return Response({"error": f"Failed to initialize AI service: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
             # Your existing Q filter for ownership check
             q_filter = Q(id=function_id) & (
                 Q(code_file__repository__organization__memberships__user=request.user) | 
                 Q(code_class__code_file__repository__organization__memberships__user=request.user)
             )
-            code_symbol_obj = CodeSymbol.objects.select_related(
-                'code_file__repository', 
-                'code_class__code_file__repository'
-            ).get(q_filter)
-            print(f"VIEW_GEN_DOC: Successfully fetched symbol '{code_symbol_obj.name}' (ID: {code_symbol_obj.id}).")
+            try:
+                code_symbol_obj = CodeSymbol.objects.select_related(
+                    'code_file__repository', 
+                    'code_class__code_file__repository'
+                ).get(q_filter)
+                print(f"VIEW_GEN_DOC: Successfully fetched symbol '{code_symbol_obj.name}' (ID: {code_symbol_obj.id}).")
+            except CodeSymbol.DoesNotExist:
+                print(f"VIEW_GEN_DOC: Symbol with ID {function_id} not found or permission denied for user {request.user.username}.")
+                return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
-        except CodeSymbol.DoesNotExist:
-            print(f"VIEW_GEN_DOC: Symbol with ID {function_id} not found or permission denied for user {request.user.username}.")
-            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+            # --- Fetch symbol's source code ---
+            function_code = get_source_for_symbol_from_view(code_symbol_obj)
+            
+            if not function_code or function_code.startswith("# Error:"):
+                error_msg = function_code or "Could not retrieve source code for the symbol."
+                print(f"VIEW_GEN_DOC: {error_msg} for symbol {code_symbol_obj.name}")
+                return Response({"error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            # --- NEW: Fetch Callers and Callees for Context ---
+            callers_qs = CodeDependency.objects.filter(callee=code_symbol_obj).select_related('caller')[:3]
+            callees_qs = CodeDependency.objects.filter(caller=code_symbol_obj).select_related('callee')[:3]
+            
+            callers_names = [dep.caller.name for dep in callers_qs]
+            callees_names = [dep.callee.name for dep in callees_qs]
+            
+            symbol_file_path_for_prompt = "N/A"
+            actual_code_file = code_symbol_obj.code_file or (code_symbol_obj.code_class and code_symbol_obj.code_class.code_file)
+            if actual_code_file:
+                symbol_file_path_for_prompt = actual_code_file.file_path
+                
+            print(f"VIEW_GEN_DOC: Context for '{code_symbol_obj.name}': Callers: {callers_names}, Callees: {callees_names}, File: {symbol_file_path_for_prompt}")
+
+            # --- Construct the full prompt with context ---
+            context_parts = []
+            if callers_names:
+                context_parts.append(f"it is called by: {', '.join(callers_names)}{'...' if len(callers_names) > 3 else ''}")
+            if callees_names:
+                context_parts.append(f"it calls: {', '.join(callees_names)}{'...' if len(callees_names) > 3 else ''}")
+            
+            context_str_for_prompt = ""
+            if context_parts:
+                context_str_for_prompt = f"\n\nFor context, this symbol " + " and ".join(context_parts) + "."
+
+            prompt = (
+                f"You are an expert Python programmer. Your task is to write a concise, professional, "
+                f"Google-style docstring for the Python symbol named '{code_symbol_obj.name}' located in file '{symbol_file_path_for_prompt}'. "
+                f"Do not include the function/method signature itself, only the docstring content inside triple quotes. "
+                f"Start with a one-line summary. Then, if applicable, describe arguments and what it returns."
+                f"{context_str_for_prompt}\n\n"
+                f"Here is the source code for '{code_symbol_obj.name}':\n"
+                f"```python\n{function_code}\n```\n"
+                f"Generate only the docstring content:"
+            )
+            
+            # --- Stream the Response using the generator ---
+            response_stream = gemini_stream_generator(prompt, genai_client) 
+            return StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+
         except Exception as e:
-            print(f"VIEW_GEN_DOC: Error fetching symbol {function_id}: {e}")
-            return Response({"error": "Internal server error fetching symbol."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # --- Fetch symbol's source code ---
-        # (Using the corrected variable name `code_symbol_obj` from your provided code)
-        function_code = get_source_for_symbol_from_view(code_symbol_obj) # Use your helper
-        
-        if not function_code or function_code.startswith("# Error:"):
-            error_msg = function_code or "Could not retrieve source code for the symbol."
-            print(f"VIEW_GEN_DOC: {error_msg} for symbol {code_symbol_obj.name}")
-            # Return non-streaming error
-            return Response({"error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        # --- NEW: Fetch Callers and Callees for Context ---
-        callers_qs = CodeDependency.objects.filter(callee=code_symbol_obj).select_related('caller')[:3] # Limit for prompt
-        callees_qs = CodeDependency.objects.filter(caller=code_symbol_obj).select_related('callee')[:3] # Limit for prompt
-        
-        callers_names = [dep.caller.name for dep in callers_qs]
-        callees_names = [dep.callee.name for dep in callees_qs]
-        
-        symbol_file_path_for_prompt = "N/A"
-        actual_code_file = code_symbol_obj.code_file or (code_symbol_obj.code_class and code_symbol_obj.code_class.code_file)
-        if actual_code_file:
-            symbol_file_path_for_prompt = actual_code_file.file_path
-        
-        print(f"VIEW_GEN_DOC: Context for '{code_symbol_obj.name}': Callers: {callers_names}, Callees: {callees_names}, File: {symbol_file_path_for_prompt}")
-
-        # --- Construct the full prompt with context ---
-        context_parts = []
-        if callers_names:
-            context_parts.append(f"it is called by: {', '.join(callers_names)}{'...' if len(callers_names) > 3 else ''}") # Though already sliced
-        if callees_names:
-            context_parts.append(f"it calls: {', '.join(callees_names)}{'...' if len(callees_names) > 3 else ''}")
-        
-        context_str_for_prompt = ""
-        if context_parts:
-            context_str_for_prompt = f"\n\nFor context, this symbol " + " and ".join(context_parts) + "."
-
-        # Your original prompt structure, now with added context
-        prompt = (
-            f"You are an expert Python programmer. Your task is to write a concise, professional, "
-            f"Google-style docstring for the Python symbol named '{code_symbol_obj.name}' located in file '{symbol_file_path_for_prompt}'. "
-            f"Do not include the function/method signature itself, only the docstring content inside triple quotes. "
-            f"Start with a one-line summary. Then, if applicable, describe arguments and what it returns."
-            f"{context_str_for_prompt}\n\n"
-            f"Here is the source code for '{code_symbol_obj.name}':\n"
-            f"```python\n{function_code}\n```\n"
-            f"Generate only the docstring content:"
-        )
-        
-        # --- Stream the Response using the generator ---
-        # Pass the initialized openai_client to the generator
-        response_stream = openai_stream_generator(prompt, openai_client) 
-        return StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+            import traceback
+            traceback.print_exc()
+            return Response({"error": f"Internal Server Error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 class SaveDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -531,12 +528,22 @@ class SemanticSearchView(generics.ListAPIView):
             return CodeSymbol.objects.none() # Return empty if no query
 
         try:
-            # 1. Get the embedding for the search query from OpenAI
-            response = OPENAI_CLIENT_INSTANCE.embeddings.create(
-                input=query_text,
-                model=OPENAI_EMBEDDING_MODEL_FOR_SEARCH
+            # 1. Get the embedding for the search query from Gemini
+            genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+            response = genai_client.models.embed_content(
+                model=settings.EMBEDDING_MODEL_ID,
+                contents=query_text
             )
-            query_embedding = response.data[0].embedding
+            # Check if response has 'embedding' or 'embeddings' based on SDK version
+            # Usually for single content it is 'embedding'
+            if hasattr(response, 'embedding'):
+                query_embedding = response.embedding.values
+            elif hasattr(response, 'embeddings'):
+                query_embedding = response.embeddings[0].values
+            else:
+                 # Fallback if structure is different (e.g. dict-like access if not typed)
+                 # But standard SDK returns object
+                 query_embedding = response.embedding.values
 
             user_repos = Repository.objects.filter(user=self.request.user)
 
@@ -929,11 +936,10 @@ class MarkNotificationReadView(APIView):
 
 def generate_explanation_stream(
     symbol_obj: CodeSymbol, 
-    source_code: str, 
-    openai_client: OpenAIClient
+    source_code: str
 ):
     """
-    Generates a stream of text chunks for the code explanation.
+    Generates a stream of text chunks for the code explanation using Gemini.
     """
     callers_qs = CodeDependency.objects.filter(callee=symbol_obj).select_related('caller')[:3] # Limit for prompt
     callees_qs = CodeDependency.objects.filter(caller=symbol_obj).select_related('callee')[:3] # Limit for prompt
@@ -975,25 +981,22 @@ def generate_explanation_stream(
     print(f"DEBUG_EXPLAIN_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
 
     try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-nano", # e.g., "gpt-3.5-turbo" or "gpt-4"
-            messages=[
-                {"role": "system", "content": "You are Helix, a helpful AI programming assistant that explains code clearly and concisely."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=True,
-            temperature=0.3, # Lower temperature for more factual explanations
-            max_tokens=1000  # Adjust as needed for desired explanation length
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        response = genai_client.models.generate_content_stream(
+            model=settings.GEMINI_MODEL_ID,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=1000,
+                system_instruction="You are Helix, a helpful AI programming assistant that explains code clearly and concisely."
+            )
         )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
     except Exception as e:
         error_message = f"// Helix encountered an error while generating the explanation: {str(e)}"
         print(f"EXPLAIN_CODE_STREAM_ERROR: {error_message}")
-        # Stream error message in a way the frontend can parse if it expects text
-        # Or handle more gracefully if frontend expects structured errors
         yield error_message
 
 @method_decorator(csrf_exempt, name='dispatch') # If using SessionAuth and POST
@@ -1002,15 +1005,6 @@ class ExplainCodeView(APIView):
 
     def post(self, request, symbol_id, *args, **kwargs): # Changed to POST as it's an action
         print(f"VIEW_EXPLAIN_CODE: Request for symbol_id: {symbol_id} by user: {request.user.username}")
-
-        openai_client = OPENAI_CLIENT_INSTANCE
-
-        if not openai_client:
-            # Return a non-streaming error if client setup fails
-            return Response(
-                {"error": "Helix's explanation service is currently unavailable."}, 
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
 
         try:
             q_filter = Q(id=symbol_id) & (
@@ -1038,7 +1032,7 @@ class ExplainCodeView(APIView):
              print(f"VIEW_EXPLAIN_CODE: Source code retrieval failed: {source_code} for symbol {symbol_obj.name}")
              return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        response_stream = generate_explanation_stream(symbol_obj, source_code, openai_client)
+        response_stream = generate_explanation_stream(symbol_obj, source_code)
         
         # It's good practice to set appropriate headers for streaming
         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
@@ -1048,11 +1042,10 @@ class ExplainCodeView(APIView):
     
 def generate_tests_stream(
     symbol_obj: CodeSymbol,
-    source_code: str,
-    openai_client: OpenAIClient
+    source_code: str
 ):
     """
-    Generates a stream of pytest code for the given symbol.
+    Generates a stream of pytest code for the given symbol using Gemini.
     """
     symbol_file_path = symbol_obj.code_file.file_path if symbol_obj.code_file else \
                        (symbol_obj.code_class.code_file.file_path if symbol_obj.code_class and symbol_obj.code_class.code_file else "N/A")
@@ -1086,20 +1079,19 @@ def generate_tests_stream(
     print(f"DEBUG_SUGGEST_TESTS_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
 
     try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini", # "gpt-4-turbo-preview" is great for code
-            messages=[
-                {"role": "system", "content": "You are a helpful AI programming assistant that writes Python unit tests using pytest."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=True,
-            temperature=0.4, # A bit of creativity for edge cases, but still factual
-            max_tokens=1500  # Allow for longer code blocks
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        response = genai_client.models.generate_content_stream(
+            model=settings.GEMINI_MODEL_ID,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.4,
+                max_output_tokens=1500,
+                system_instruction="You are a helpful AI programming assistant that writes Python unit tests using pytest."
+            )
         )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
     except Exception as e:
         error_message = f"// Helix encountered an error while generating test suggestions: {str(e)}"
         print(f"SUGGEST_TESTS_STREAM_ERROR: {error_message}")
@@ -1110,11 +1102,10 @@ def generate_tests_stream(
 
 def generate_cohesive_tests_stream(
     symbol_ids: list[int],
-    user: User,
-    openai_client: OpenAIClient
+    user: User
 ):
     """
-    Generates a single, cohesive pytest file for a list of symbols.
+    Generates a single, cohesive pytest file for a list of symbols using Gemini.
     """
     # 1. Fetch all symbols and perform a permission check
     q_filter = Q(id__in=symbol_ids) & (
@@ -1180,18 +1171,20 @@ def generate_cohesive_tests_stream(
 
     print(f"DEBUG_COHESIVE_TESTS_PROMPT:\n{final_prompt}\n--------------------")
 
-    # 4. Stream the response from the LLM
+    # 4. Stream the response from Gemini
     try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": final_prompt}],
-            stream=True,
-            temperature=0.3
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        response = genai_client.models.generate_content_stream(
+            model=settings.GEMINI_MODEL_ID,
+            contents=final_prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=2000
+            )
         )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
     except Exception as e:
         yield f"// Helix encountered an error: {str(e)}"
 
@@ -1202,14 +1195,6 @@ class SuggestTestsView(APIView):
 
     def post(self, request, symbol_id, *args, **kwargs):
         print(f"VIEW_SUGGEST_TESTS: Request for symbol_id: {symbol_id} by user: {request.user.username}")
-
-        openai_client = OPENAI_CLIENT_INSTANCE
-        
-        if not openai_client:
-            return Response(
-                {"error": "Helix's AI service is currently unavailable."}, 
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
 
         try:
             q_filter = Q(id=symbol_id) & (
@@ -1232,7 +1217,7 @@ class SuggestTestsView(APIView):
             print(f"VIEW_SUGGEST_TESTS: {error_msg} for symbol {symbol_obj.name}")
             return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        response_stream = generate_tests_stream(symbol_obj, source_code, openai_client)
+        response_stream = generate_tests_stream(symbol_obj, source_code)
         
         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
         response['X-Accel-Buffering'] = 'no'
@@ -1246,11 +1231,6 @@ class ClassSummaryView(APIView):
     def post(self, request, class_id, *args, **kwargs):
         print(f"VIEW_CLASS_SUMMARY: Request for class_id: {class_id} by user: {request.user.username}")
 
-        openai_client = OPENAI_CLIENT_INSTANCE
-
-        if not openai_client:
-            return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
         try:
             # Check ownership via the file the class belongs to
             code_class_obj = CodeClass.objects.select_related(
@@ -1262,7 +1242,9 @@ class ClassSummaryView(APIView):
         except CodeClass.DoesNotExist:
             return Response({"error": "Class not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
         
-        response_stream = generate_class_summary_stream(code_class_obj, openai_client)
+        # Create Gemini client
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        response_stream = generate_class_summary_stream(code_class_obj, genai_client)
         
         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
         response['X-Accel-Buffering'] = 'no'
@@ -1534,16 +1516,15 @@ class SummarizeModuleView(APIView):
 
         print(f"SUMMARIZE_MODULE_VIEW: Request for repo {repo_id}, path '{module_path}'")
 
-        if not OPENAI_CLIENT_INSTANCE:
-            return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
         if not Repository.objects.filter(id=repo_id, user=request.user).exists():
             return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Create Gemini client
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
         response_stream = generate_module_readme_stream(
             repo_id=repo_id,
             module_path=module_path.strip(),
-            openai_client=OPENAI_CLIENT_INSTANCE
+            genai_client=genai_client
         )
         
         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
@@ -2193,12 +2174,7 @@ class CohesiveTestGenerationView(APIView):
         if not isinstance(symbol_ids, list) or not symbol_ids:
             return Response({"error": "A list of 'symbol_ids' is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        openai_client = OPENAI_CLIENT_INSTANCE
-        if not openai_client:
-            return Response({"error": "AI service unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-        # We will create the new service function next
-        response_stream = generate_cohesive_tests_stream(symbol_ids, request.user, openai_client)
+        response_stream = generate_cohesive_tests_stream(symbol_ids, request.user)
         
         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
         response['X-Accel-Buffering'] = 'no'
@@ -2315,7 +2291,6 @@ class SymbolAnalysisView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, symbol_id, *args, **kwargs):
-        openai_client = OPENAI_CLIENT_INSTANCE
         try:
             # build one combined Q object: id must match, AND the user must belong to one of the two orgs
             lookup = (
@@ -2365,13 +2340,11 @@ class SuggestRefactorsView(APIView):
                 {"error": "Symbol not found or you do not have permission."},
                 status=status.HTTP_404_NOT_FOUND)
 
-        # Get the OpenAI client
-        client = OPENAI_CLIENT_INSTANCE # Or however you get your client
-        if not client:
-            return Response({"error": "AI service not configured."}, status=503)
-
-        # Use your existing streaming function
-        stream = generate_refactor_stream(symbol, client)
+        # Create Gemini client
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        
+        # Use the refactoring streaming function from ai_services
+        stream = generate_refactor_stream(symbol, genai_client)
         
         # Return the generator as a streaming HTTP response
         return StreamingHttpResponse(stream, content_type='text/plain; charset=utf-8')
@@ -2501,11 +2474,14 @@ class StreamModuleReadmeView(LoginRequiredMixin, View):
 
         module_path = request.GET.get('module_path', '').strip()
         
-        # This is the generator function from your ai_services
+        # Create Gemini client
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        
+        # This is the generator function from ai_services
         stream_generator = generate_module_readme_stream(
             repo_id=repo_id,
             module_path=module_path,
-            openai_client=OPENAI_CLIENT_INSTANCE # Assuming OPENAI_CLIENT is globally available
+            genai_client=genai_client
         )
 
         def event_stream():

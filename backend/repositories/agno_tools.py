@@ -1,10 +1,10 @@
 # backend/repositories/agno_tools.py
 from agno.tools import tool
-from openai import OpenAI
-import psycopg2 # Import the OpenAI library
-# We need access to our models and the OpenAI client
+from google import genai
+import psycopg2
+from django.conf import settings
+# We need access to our models and the Gemini client
 from .models import KnowledgeChunk, CodeSymbol, OrganizationMember, Repository
-OPENAI_CLIENT = OpenAI()
 from pgvector.django import L2Distance
 
 from typing import Optional
@@ -38,11 +38,13 @@ def helix_knowledge_search(query: str, repo_id: int, user_id: int) -> str:
     # --- END FIX ---
 
     try:
-        # 2. Generate an embedding for the user's query
-        query_embedding = OPENAI_CLIENT.embeddings.create(
-            input=[query], 
-            model="text-embedding-3-small"
-        ).data[0].embedding
+        # 2. Generate an embedding for the user's query using Gemini
+        genai_client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+        embedding_response = genai_client.models.embed_content(
+            model=settings.EMBEDDING_MODEL_ID,
+            content=query
+        )
+        query_embedding = embedding_response.embeddings[0].values
         
         # Now that we've confirmed access, the rest of the queries can proceed.
         # The RLS policies will provide an additional layer of security, but this
