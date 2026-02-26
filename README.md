@@ -150,8 +150,8 @@ Helix generates living documentation, surfaces architectural insights, and conne
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/divagr18/Helix.git
-cd Helix
+git clone https://github.com/divagr18/HelixDocs.git
+cd HelixDocs
 ```
 
 ### 2. Set Up Environment Variables
